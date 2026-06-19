@@ -6,10 +6,10 @@ import datetime
 import FinanceDataReader as fdr
 import requests
 
-st.set_page_config(page_title="11원칙 퀀트 대시보드 v17.3", page_icon="🧭", layout="wide")
+st.set_page_config(page_title="11원칙 퀀트 대시보드 v17.4", page_icon="🧭", layout="wide")
 
 # ─────────────────────────────────────────
-# 한글 이름 → 티커 매핑 (SNDK 롤백 및 누락된 ARM 완벽 추가)
+# 한글 이름 → 티커 매핑
 # ─────────────────────────────────────────
 US_NAME_MAP = {
     "애플": "AAPL", "마이크로소프트": "MSFT", "엔비디아": "NVDA", "구글": "GOOGL", "알파벳": "GOOGL",
@@ -18,7 +18,7 @@ US_NAME_MAP = {
     "일라이릴리": "LLY", "코카콜라": "KO", "AMD": "AMD", "퀄컴": "QCOM", "인텔": "INTC", "TSMC": "TSM",
     "아이온큐": "IONQ", "소파이": "SOFI", "크라우드스트라이크": "CRWD", "스노우플레이크": "SNOW",
     "암": "ARM", "ARM": "ARM", "슈퍼마이크로": "SMCI", "슈마컴": "SMCI",
-    "웨스턴디지털": "WDC", "샌디스크": "SNDK" # 사용자 요청에 따라 강제 변환 취소, SNDK 원본 유지!
+    "웨스턴디지털": "WDC", "샌디스크": "SNDK"
 }
 
 @st.cache_data(ttl=86400)
@@ -38,13 +38,20 @@ def get_krx_mapping():
 KRX_DICT = get_krx_mapping()
 
 # ─────────────────────────────────────────
-# CNN F&G 오리지널 로직 (어설픈 VIX 우회 모드 삭제)
+# 한국 시간(KST) 강제 적용 헬퍼 함수 (핵심 수정 사항)
+# ─────────────────────────────────────────
+def get_kst_now():
+    # 클라우드가 미국에 있어도 무조건 한국 시간(UTC+9)을 반환하도록 강제
+    kst = datetime.timezone(datetime.timedelta(hours=9))
+    return datetime.datetime.now(kst)
+
+# ─────────────────────────────────────────
+# CNN F&G 오리지널 로직
 # ─────────────────────────────────────────
 @st.cache_data(ttl=1800)
 def get_real_cnn_fg():
     try:
         url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
-        # 봇 차단을 최대한 피하기 위한 헤더 강화
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             "Accept": "application/json",
@@ -64,7 +71,6 @@ def get_real_cnn_fg():
         df_fg.set_index('Date', inplace=True)
         return current_score, rating, df_fg['y']
     except Exception:
-        # VIX 가짜 모드 완전 삭제. 차단되면 깔끔하게 N/A 반환.
         return None, "데이터 수집 오류 (CNN 서버 차단됨)", None
 
 # ─────────────────────────────────────────
@@ -108,7 +114,7 @@ def get_tenbagger_signal(d):
     return "🚀 텐배거(1순위)" if points >= 3 else ("🌱 폭발적 성장" if points == 2 else "-")
 
 # ─────────────────────────────────────────
-# 데이터 수집 
+# 데이터 수집 (한국 시간 KST 강제 패치)
 # ─────────────────────────────────────────
 def calc_rsi(close):
     if len(close) < 15: return None
@@ -122,11 +128,14 @@ def calc_macd(close):
     hist = macd - macd.ewm(span=9).mean()
     return round(float(macd.iloc[-1]), 2), "🟢상승" if hist.iloc[-1] > 0 else "🔴하락"
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=180) # 캐시 주기를 3분으로 단축하여 실시간성 강화
 def get_stock_data(query, is_kr=False):
     base = {"Name": query, "error": None}
     try:
-        start = (datetime.datetime.now() - datetime.timedelta(days=180)).strftime('%Y-%m-%d')
+        # 🔥 여기서 미국/한국 서버 상관없이 무조건 KST 기준으로 날짜를 계산합니다!
+        kst_now = get_kst_now()
+        start = (kst_now - datetime.timedelta(days=180)).strftime('%Y-%m-%d')
+        
         if is_kr:
             kr_info = KRX_DICT.get(str(query).strip().upper())
             if kr_info: raw_code, yf_code = kr_info["raw_code"], kr_info["yf_code"]
@@ -194,8 +203,8 @@ def color_df(val):
 # ─────────────────────────────────────────
 # UI 메인
 # ─────────────────────────────────────────
-st.title("🧭 11원칙 퀀트 트레이딩 대시보드 v17.3")
-st.caption("SNDK 롤백 및 불필요한 F&G 가짜 데이터 제거본")
+st.title("🧭 11원칙 퀀트 트레이딩 대시보드 v17.4")
+st.caption("클라우드 서버 시차(KST 강제 적용) 버그 수정본")
 
 tab1, tab4, tab2, tab3 = st.tabs(["📊 실시간 포트폴리오", "🚀 오늘의 텐배거 레이더", "🌐 매크로 & F&G Index", "🤖 AI 참모 리포트"])
 
@@ -203,7 +212,7 @@ cnn_score, cnn_rating, cnn_history = get_real_cnn_fg()
 
 with tab2:
     st.subheader("🌐 글로벌 매크로 및 시장 심리")
-    with st.spinner("실시간 매크로 데이터를 가져오는 중..."):
+    with st.spinner("실시간 매크로 데이터를 복구 중입니다..."):
         usd_krw = get_stock_data("KRW=X")
         vix_1y = yf.Ticker("^VIX").history(period="1y")
         current_vix = round(float(vix_1y['Close'].iloc[-1]), 2) if not vix_1y.empty else "N/A"
@@ -304,7 +313,7 @@ with tab4:
 with tab3:
     st.subheader("🤖 AI 참모 전용 구조화 리포트")
     now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    lines = [f"[11원칙 퀀트 분석 리포트 v17.3] ({now})\n", f"- F&G: {cnn_score}\n"]
+    lines = [f"[11원칙 퀀트 분석 리포트 v17.4] ({now})\n", f"- F&G: {cnn_score}\n"]
     for d in all_data:
         ai_sig = get_ai_signal(d)
         tb_sig = get_tenbagger_signal(d)
