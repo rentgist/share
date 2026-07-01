@@ -5,8 +5,10 @@ import numpy as np
 import datetime
 import FinanceDataReader as fdr
 import requests
+import os
+import concurrent.futures
 
-st.set_page_config(page_title="11원칙 퀀트 대시보드 v20.4", page_icon="🧭", layout="wide")
+st.set_page_config(page_title="11원칙 퀀트 대시보드 v20.6", page_icon="🧭", layout="wide")
 
 # ─────────────────────────────────────────
 # 한글 이름 → 티커 매핑
@@ -37,6 +39,70 @@ def get_krx_mapping():
         return {}
 
 KRX_DICT = get_krx_mapping()
+
+# ─────────────────────────────────────────
+# 매매일지 — CSV 저장/로드 및 포지션 계산
+# ─────────────────────────────────────────
+TRADE_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trade_log.csv")
+TRADE_LOG_COLUMNS = ["거래일시","종목명","정규화_티커","지역","거래유형","가격","수량","전략태그","메모"]
+
+def load_trade_log():
+    if os.path.exists(TRADE_LOG_PATH):
+        try:
+            df = pd.read_csv(TRADE_LOG_PATH, encoding="utf-8-sig")
+            for col in TRADE_LOG_COLUMNS:
+                if col not in df.columns:
+                    df[col] = ""
+            return df
+        except:
+            pass
+    return pd.DataFrame(columns=TRADE_LOG_COLUMNS)
+
+def save_trade_log(df):
+    df.to_csv(TRADE_LOG_PATH, index=False, encoding="utf-8-sig")
+
+def normalize_trade_ticker(name: str, region: str) -> str:
+    """종목명을 정규화된 티커로 변환 (마이크로소프트/MSFT → MSFT, 005930 → 삼성전자)"""
+    name_upper = name.strip().upper()
+    if region == "미국":
+        if name_upper in US_NAME_MAP:
+            return US_NAME_MAP[name_upper]
+        return name_upper
+    if region == "한국":
+        if name_upper in KRX_DICT:
+            return name_upper
+        for kr_name, info in KRX_DICT.items():
+            if info["raw_code"] == name.strip() or info["raw_code"] == name_upper:
+                return kr_name
+        return name_upper
+    return name_upper
+
+def calculate_positions(trade_log):
+    """거래 로그로부터 종목별 포지션(평균 매수가, 보유 수량, 실현손익)을 계산"""
+    positions = {}
+    for _, row in trade_log.iterrows():
+        ticker = str(row["정규화_티커"])
+        if ticker not in positions:
+            positions[ticker] = {
+                "지역": row["지역"], "보유수량": 0, "평균매수가": 0.0,
+                "총매수수량": 0, "총매도수량": 0, "실현손익": 0.0,
+            }
+        pos = positions[ticker]
+        qty = int(row["수량"])
+        price = float(row["가격"])
+        if row["거래유형"] == "매수":
+            total_cost = pos["평균매수가"] * pos["보유수량"] + price * qty
+            pos["보유수량"] += qty
+            pos["총매수수량"] += qty
+            if pos["보유수량"] > 0:
+                pos["평균매수가"] = total_cost / pos["보유수량"]
+        elif row["거래유형"] == "매도":
+            if pos["평균매수가"] > 0 and pos["보유수량"] > 0:
+                realized = (price - pos["평균매수가"]) * min(qty, pos["보유수량"])
+                pos["실현손익"] += realized
+            pos["보유수량"] -= qty
+            pos["총매도수량"] += qty
+    return positions
 
 def get_kst_now():
     kst = datetime.timezone(datetime.timedelta(hours=9))
@@ -111,15 +177,26 @@ def get_macro_charts():
         "vkospi_10y": "^VKOSPI",
         "usdkrw_10y": "KRW=X"
     }
-    for k, v in tickers.items():
-        try: 
-            df = yf.Ticker(v).history(period="10y")
-            if not df.empty:
-                df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
-                df = df[~df.index.duplicated(keep='last')]
-            result[k] = df
-        except: 
+    
+    ticker_list = list(tickers.values())
+    try:
+        data = yf.download(ticker_list, period="10y", group_by='ticker', threads=True, progress=False)
+        for k, v in tickers.items():
+            try:
+                if len(ticker_list) == 1:
+                    df = data.dropna(how='all')
+                else:
+                    df = data[v].dropna(how='all')
+                if not df.empty:
+                    df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
+                    df = df[~df.index.duplicated(keep='last')]
+                result[k] = df
+            except:
+                result[k] = pd.DataFrame()
+    except Exception as e:
+        for k in tickers:
             result[k] = pd.DataFrame()
+            
     return result
 
 # ─────────────────────────────────────────
@@ -201,7 +278,21 @@ def calculate_us_risk_radar(vix_hist, vix3m_hist, hyg_hist, ief_hist, spy_hist):
         except:
             alerts.append(("⚪", "신용 스프레드 산출 불가."))
 
-    if danger_count >= 4:
+    # 4. 장기 추세 (MA200) 이탈 여부 확인
+    if not spy_hist.empty and len(spy_hist) >= 200:
+        spy_close = spy_hist['Close']
+        curr_spy = float(spy_close.iloc[-1])
+        ma200 = float(spy_close.rolling(200).mean().iloc[-1])
+        if curr_spy < ma200 * 0.95:
+            alerts.append(("🔴", f"SPY 장기 추세 붕괴 (MA200 5% 이상 하회). 구조적 침체 위험."))
+            danger_count += 2
+        elif curr_spy < ma200:
+            alerts.append(("🟠", f"SPY 장기 추세 이탈 (MA200 하회). 약세장 전환 주의."))
+            danger_count += 1
+        else:
+            alerts.append(("🟢", f"SPY 장기 추세 유지 (MA200 상회)."))
+
+    if danger_count >= 5:
         grade = "🔴 미국 위기 경보 — 폭락 초입 가능성."
         color = "#ff4b4b"
     elif danger_count >= 2:
@@ -265,7 +356,21 @@ def calculate_kr_risk_radar(vkospi_hist, usdkrw_hist, kospi_hist):
         else:
             alerts.append(("🟢", f"KOSPI 단기 추세 ({k_5d_ret:+.1f}%) — 안정적."))
 
-    if danger_count >= 4:
+    # 4. 장기 추세 (MA200) 이탈 여부 확인
+    if not kospi_hist.empty and len(kospi_hist) >= 200:
+        kospi_close = kospi_hist['Close']
+        curr_kospi = float(kospi_close.iloc[-1])
+        ma200 = float(kospi_close.rolling(200).mean().iloc[-1])
+        if curr_kospi < ma200 * 0.95:
+            alerts.append(("🔴", f"KOSPI 장기 추세 붕괴 (MA200 5% 이상 하회). 구조적 침체 구간."))
+            danger_count += 2
+        elif curr_kospi < ma200:
+            alerts.append(("🟠", f"KOSPI 장기 추세 이탈 (MA200 하회). 약세장 전환 주의."))
+            danger_count += 1
+        else:
+            alerts.append(("🟢", f"KOSPI 장기 추세 유지 (MA200 상회)."))
+
+    if danger_count >= 5:
         grade = "🔴 한국 위기 경보 — 외인 이탈 및 폭락 초입 우려."
         color = "#ff4b4b"
     elif danger_count >= 2:
@@ -320,12 +425,20 @@ def calculate_us_bottom_finder(spy_hist, vix_hist, cnn_score):
         elif curr_vix >= 22: score += 5;  details.append(f"🟡 VIX 상승 주의 ({curr_vix:.1f}) [+5점]")
         else: details.append(f"⚪ VIX 평온 ({curr_vix:.1f}) [+0점]")
 
+    has_cnn = False
     if cnn_score is not None:
+        has_cnn = True
         if cnn_score <= 15: score += 20; details.append(f"🟢 F&G 역사적 패닉 ({cnn_score}) [+20점]")
         elif cnn_score <= 25: score += 15; details.append(f"🟢 F&G 극단 공포 ({cnn_score}) [+15점]")
         elif cnn_score <= 35: score += 8;  details.append(f"🟡 F&G 공포 구간 ({cnn_score}) [+8점]")
         elif cnn_score <= 45: score += 3;  details.append(f"⚪ F&G 약한 공포 ({cnn_score}) [+3점]")
         else: details.append(f"⚪ F&G 중립~탐욕 ({cnn_score}) [+0점]")
+    else:
+        details.append("⚪ F&G 데이터 누락 (최종 점수에서 보정) [+0점]")
+
+    if not has_cnn:
+        score = int(score * (100.0 / 80.0))
+        details.append("🔄 (CNN F&G 누락으로 남은 점수를 100점 만점 기준으로 환산 완료)")
 
     score = min(int(score), 100)
 
@@ -570,11 +683,20 @@ def get_cashflow_interpretation(d):
 def get_sector_baseline():
     benchmarks = {"S&P 500 (SPY)": "SPY", "반도체 (SOXX)": "SOXX", "유틸리티 (XLU)": "XLU"}
     res = {}
-    for name, ticker in benchmarks.items():
-        try:
-            hist = yf.Ticker(ticker).history(period="3mo")['Close']
-            res[name] = calc_rsi(hist, 14)
-        except:
+    ticker_list = list(benchmarks.values())
+    try:
+        data = yf.download(ticker_list, period="3mo", group_by='ticker', threads=True, progress=False)
+        for name, ticker in benchmarks.items():
+            try:
+                if len(ticker_list) == 1:
+                    hist = data['Close'].dropna()
+                else:
+                    hist = data[ticker]['Close'].dropna()
+                res[name] = calc_rsi(hist, 14)
+            except:
+                res[name] = None
+    except Exception as e:
+        for name in benchmarks:
             res[name] = None
     return res
 
@@ -700,6 +822,7 @@ def get_ai_signal(d):
     rsi  = d.get('RSI_14')
     cp   = d.get('Price')
     ma20 = d.get('MA20')
+    ma200= d.get('MA200')
     vol  = d.get('Vol_ratio')
     macd = d.get('MACD_dir') or ""
     roe  = d.get('ROE')
@@ -710,6 +833,7 @@ def get_ai_signal(d):
     rsi_f    = float(rsi)
     cp_f     = float(cp)
     ma20_f   = float(ma20)
+    ma200_f  = float(ma200) if ma200 is not None else cp_f
     vol_f    = float(vol) if vol is not None else 100.0
     ma20_gap = (cp_f - ma20_f) / ma20_f * 100
 
@@ -721,7 +845,12 @@ def get_ai_signal(d):
     if rsi_f >= 75 and ma20_gap > 15: return "🔵 과매수 (익절/관망)"
     if 60 <= rsi_f < 75 and cp_f > ma20_f and "상승" in macd and vol_f > 120: return "🚀 추세 탑승 (불타기)"
     if 45 <= rsi_f < 60 and cp_f >= ma20_f: return "🟢 얕은 눌림목 (분할매수)"
-    if rsi_f < 45: return "🔥 바닥 줍줍 (적극매수)"
+    if rsi_f < 45: 
+        if cp_f >= ma200_f * 0.95:  # MA200을 약간 하회하는 것까진 허용
+            return "🔥 바닥 줍줍 (적극매수)"
+        else:
+            return "⚠️ 떨어지는 칼날 (신중/관망)"
+            
     return "🟡 방향성 탐색 (관망)"
 
 def calculate_smart_target(d, ai_sig):
@@ -766,7 +895,7 @@ def get_tenbagger_signal(d):
     points = 0
     if rev_g >= 0.30: points += 1   
     if earn_g >= 0.30 or is_turnaround: points += 1    
-    if 0 < peg <= 1.5: points += 1  
+    if (0 < peg <= 1.5) or is_turnaround: points += 1  
     if op_m is not None and float(op_m) >= 0.20: points += 1 # 독점적 마진 가산점
     
     if points >= 3: return "🔥 기관 최선호 대장주"
@@ -787,9 +916,17 @@ def get_stock_data(query, is_kr=False, fast_mode=False):
             kr_info = KRX_DICT.get(str(query).strip().upper())
             if kr_info: raw_code, yf_code = kr_info["raw_code"], kr_info["yf_code"]
             else:        raw_code, yf_code = query, f"{query}.KS"
-            hist = fdr.DataReader(raw_code, start=start).dropna()
+            
             tk   = yf.Ticker(yf_code)
             info = tk.info
+            
+            try:
+                # 1. fdr 우선 시도 (Naver Finance)
+                hist = fdr.DataReader(raw_code, start=start).dropna()
+            except Exception:
+                # 2. Naver 서버 차단/지연(Timeout) 시 yfinance 우회 수집
+                hist = tk.history(period="1y").dropna()
+                
             ticker_str = raw_code
         else:
             ticker_str = US_NAME_MAP.get(str(query).strip().upper(), query).upper()
@@ -823,9 +960,11 @@ def get_stock_data(query, is_kr=False, fast_mode=False):
 
         ma5  = close.rolling(5).mean().iloc[-1]
         ma20 = close.rolling(20).mean().iloc[-1]
+        ma200= close.rolling(200, min_periods=1).mean().iloc[-1]
         std  = close.rolling(20).std().iloc[-1]
         base["MA5"]       = ma5
         base["MA20"]      = ma20
+        base["MA200"]     = ma200
         base["BB_upper"]  = ma20 + 2 * std
         base["BB_lower"]  = ma20 - 2 * std
         base["Vol_ratio"] = round(float(vol.iloc[-1] / vol.rolling(20).mean().iloc[-2] * 100), 1)
@@ -1010,8 +1149,8 @@ def color_df(val):
 # ─────────────────────────────────────────
 # UI — 전역 데이터 선초기화
 # ─────────────────────────────────────────
-st.title("🧭 11원칙 퀀트 트레이딩 대시보드 v20.4")
-st.caption("v20.4: 텐배거 턴어라운드 예외 신설 + 한국 위험 탐지기 완벽 분리 + 확정 일정 캘린더 도입")
+st.title("🧭 11원칙 퀀트 트레이딩 대시보드 v20.6")
+st.caption("v20.6: 데이터 병렬 다운로드(Multi-threading) 성능 최적화 | v20.5: 선택한 거래 기록 삭제 기능 추가 | v20.4: 텐배거 턴어라운드 예외 신설 + 한국 위험탐지 강화")
 
 cnn_score, cnn_rating, cnn_history = get_real_cnn_fg()
 sector_base = get_sector_baseline()
@@ -1021,7 +1160,7 @@ macro_charts = get_macro_charts()
 usd_krw      = macro_charts.get("usdkrw_10y", pd.DataFrame())
 
 # 탭 구성
-tab1, tab2, tab4, tab3, tab_port, tab5, tab_risk = st.tabs([
+tab1, tab2, tab4, tab3, tab_port, tab5, tab_risk, tab_journal = st.tabs([
     "📊 실시간 포트폴리오",
     "🌐 매크로 & F&G Index",
     "🚀 오늘의 텐배거 레이더",
@@ -1029,6 +1168,7 @@ tab1, tab2, tab4, tab3, tab_port, tab5, tab_risk = st.tabs([
     "💼 내 포트폴리오 장투 전략",
     "📖 11원칙 매매 가이드라인",
     "🚨 리스크 등급 가이드",
+    "📒 매매일지",
 ])
 
 with tab_port:
@@ -1347,6 +1487,256 @@ with tab_risk:
     | 높음 (5% 이상) | 높음 (1.2 이상) | **🔴 고위험 — 하락 베팅 + 큰 변동성, 진입 신중** |
     """)
 
+with tab_journal:
+    st.subheader("📒 매매일지 — 거래 기록 & 포지션 관리")
+    st.caption("모든 거래는 로컬 CSV 파일로 영구 저장됩니다. 같은 PC에서는 앱을 재시작해도 기록이 유지됩니다.")
+    st.info(
+        "💡 **종목명 자동 인식:** 한글 이름(마이크로소프트)과 티커(MSFT)를 동일 종목으로 자동 매칭합니다. "
+        "한국 종목은 종목명(삼성전자)과 종목코드(005930) 모두 인식합니다."
+    )
+
+    if "journal_prices" not in st.session_state:
+        st.session_state.journal_prices = {}
+
+    trade_log = load_trade_log()
+
+    # ── 거래 입력 폼 ──
+    st.markdown("#### ✏️ 새 거래 기록")
+    with st.form("trade_entry_form", clear_on_submit=True):
+        jc1, jc2, jc3 = st.columns(3)
+        with jc1:
+            j_name = st.text_input("종목명", placeholder="마이크로소프트, MSFT, 삼성전자, 005930...")
+            j_region = st.selectbox("지역", ["🇺🇸 미국", "🇰🇷 한국"])
+        with jc2:
+            j_type = st.selectbox("거래유형", ["매수", "매도"])
+            j_price = st.number_input("거래 가격", min_value=0.0, step=0.01, format="%.2f")
+        with jc3:
+            j_qty = st.number_input("수량 (주)", min_value=1, step=1, value=1)
+            j_tag = st.selectbox("전략 태그", [
+                "눌림목 매수", "바닥 줍줍", "물타기", "텐배거 진입",
+                "분할 매수", "스윙", "익절", "손절", "리밸런싱", "기타"
+            ])
+        j_memo = st.text_input("메모 (선택)", placeholder="실적 발표 전 선매수, RSI 30 근처 등")
+        j_submitted = st.form_submit_button("📝 거래 기록하기", type="primary")
+
+    if j_submitted:
+        if not j_name or not j_name.strip() or j_price <= 0:
+            st.error("❌ 종목명과 가격을 올바르게 입력해주세요.")
+        else:
+            region_val = "미국" if "미국" in j_region else "한국"
+            canonical = normalize_trade_ticker(j_name.strip(), region_val)
+            price_str = f"${j_price:,.2f}" if region_val == "미국" else f"{int(j_price):,}원"
+            new_row = pd.DataFrame([{
+                "거래일시": get_kst_now().strftime("%Y-%m-%d %H:%M:%S"),
+                "종목명": j_name.strip(),
+                "정규화_티커": canonical,
+                "지역": region_val,
+                "거래유형": j_type,
+                "가격": j_price,
+                "수량": int(j_qty),
+                "전략태그": j_tag,
+                "메모": j_memo,
+            }])
+            trade_log = pd.concat([trade_log, new_row], ignore_index=True)
+            save_trade_log(trade_log)
+            st.success(f"✅ {j_type} 기록 완료: {canonical} — {int(j_qty)}주 @ {price_str}")
+            st.rerun()
+
+    # ── 거래 기록 선택 삭제 ──
+    if not trade_log.empty:
+        with st.expander("⚠️ 거래 기록 삭제 (오입력 정정용)"):
+            st.caption("삭제할 거래를 아래 목록에서 선택하세요. 번호는 거래일시 최신순 기준입니다.")
+
+            # 원본 index 보존한 채 최신순 정렬
+            del_display = trade_log.copy()
+            del_display["_orig_idx"] = del_display.index
+            del_display = del_display.sort_values("거래일시", ascending=False).reset_index(drop=True)
+
+            def _price_str(row):
+                try:
+                    sym = "$" if row["지역"] == "미국" else ""
+                    suf = "" if row["지역"] == "미국" else "원"
+                    return f"{sym}{float(row['가격']):,.2f}{suf}"
+                except:
+                    return str(row["가격"])
+
+            del_options = {}
+            for seq, (_, row) in enumerate(del_display.iterrows(), start=1):
+                label = (
+                    f"[{seq}] {str(row['거래일시'])[:16]}  "
+                    f"{row['종목명']} ({row['정규화_티커']}) — "
+                    f"{row['거래유형']} {int(row['수량'])}주 @ {_price_str(row)}"
+                )
+                del_options[label] = int(row["_orig_idx"])
+
+            selected_label = st.selectbox(
+                "삭제할 거래 선택:",
+                options=list(del_options.keys()),
+                key="del_trade_select"
+            )
+
+            if selected_label:
+                orig_idx = del_options[selected_label]
+                sel_row = trade_log.loc[orig_idx]
+                st.info(
+                    f"🗑️ **선택된 기록:** [{str(sel_row['거래일시'])[:16]}] "
+                    f"{sel_row['종목명']} ({sel_row['정규화_티커']}) — "
+                    f"{sel_row['거래유형']} {int(sel_row['수량'])}주 @ {sel_row['가격']}"
+                )
+                if st.button("🗑️ 선택한 거래 삭제하기", type="primary", key="del_trade_btn"):
+                    trade_log = trade_log.drop(index=orig_idx).reset_index(drop=True)
+                    save_trade_log(trade_log)
+                    st.session_state.journal_prices = {}
+                    st.success("✅ 선택한 거래 기록이 삭제되었습니다.")
+                    st.rerun()
+
+        st.divider()
+
+        # ── 종목별 포지션 요약 ──
+        st.markdown("#### 📊 종목별 포지션 요약")
+        positions = calculate_positions(trade_log)
+
+        if positions:
+            if st.button("🔄 현재가 조회 & 수익률 업데이트", type="primary"):
+                with st.spinner("현재가 조회 중..."):
+                    for ticker, pos in positions.items():
+                        if pos["보유수량"] > 0:
+                            try:
+                                d = get_stock_data(ticker, is_kr=(pos["지역"] == "한국"), fast_mode=True)
+                                if not d.get("error") and d.get("Price"):
+                                    st.session_state.journal_prices[ticker] = float(d["Price"])
+                            except:
+                                pass
+
+            pos_rows = []
+            for ticker, pos in positions.items():
+                region = pos["지역"]
+                curr_price = st.session_state.journal_prices.get(ticker)
+
+                if pos["보유수량"] > 0: status = "🟢 보유중"
+                elif pos["보유수량"] == 0: status = "⚪ 청산 완료"
+                else: status = "⚠️ 초과매도"
+
+                avg_str = (f"{int(round(pos['평균매수가'])):,}원" if region == "한국" else f"${pos['평균매수가']:,.2f}") if pos["평균매수가"] > 0 else "-"
+
+                curr_str, ur_str = "-", "-"
+                if curr_price:
+                    curr_str = f"{int(curr_price):,}원" if region == "한국" else f"${curr_price:,.2f}"
+                    if pos["보유수량"] > 0 and pos["평균매수가"] > 0:
+                        ur_pct = (curr_price - pos["평균매수가"]) / pos["평균매수가"] * 100
+                        ur_str = f"{'+' if ur_pct >= 0 else ''}{ur_pct:.2f}%"
+
+                rl_str = "-"
+                if pos["실현손익"] != 0:
+                    sign = "+" if pos["실현손익"] >= 0 else ""
+                    rl_str = (f"{sign}{int(round(pos['실현손익'])):,}원" if region == "한국" else f"{sign}${pos['실현손익']:,.2f}")
+
+                pos_rows.append({
+                    "종목": ticker, "상태": status,
+                    "보유수량": f"{pos['보유수량']}주",
+                    "평균매수가": avg_str, "현재가": curr_str,
+                    "미실현 수익률": ur_str, "실현손익": rl_str,
+                    "총매수": f"{pos['총매수수량']}주",
+                    "총매도": f"{pos['총매도수량']}주",
+                })
+
+            pos_df = pd.DataFrame(pos_rows).set_index("종목")
+
+            def _color_journal(val):
+                if not isinstance(val, str): return ''
+                if '%' in val:
+                    try:
+                        n = float(val.replace('%','').replace('+',''))
+                        if n > 0: return 'color: #ff4b4b; font-weight: bold'
+                        elif n < 0: return 'color: #0068c9; font-weight: bold'
+                    except: pass
+                if "🟢" in val: return 'background-color: #ccffcc; color: black'
+                if "⚪" in val: return 'color: gray; font-style: italic'
+                if "⚠️" in val: return 'background-color: #ffdddd; color: black'
+                return ''
+
+            st.dataframe(pos_df.style.map(_color_journal), use_container_width=True)
+
+        st.divider()
+
+        # ── 전체 거래 로그 ──
+        st.markdown("#### 📜 전체 거래 로그")
+        disp_cols = [c for c in TRADE_LOG_COLUMNS if c in trade_log.columns]
+        disp_log = trade_log[disp_cols].sort_values("거래일시", ascending=False).reset_index(drop=True)
+        disp_log.index = disp_log.index + 1
+        st.dataframe(disp_log, use_container_width=True)
+
+        st.divider()
+
+        # ── 거래 통계 ──
+        st.markdown("#### 📈 거래 통계")
+        tc1, tc2, tc3 = st.columns(3)
+        tc1.metric("총 거래", f"{len(trade_log)}건")
+        tc2.metric("매수 / 매도", f"{len(trade_log[trade_log['거래유형']=='매수'])} / {len(trade_log[trade_log['거래유형']=='매도'])}")
+        tc3.metric("거래 종목 수", f"{trade_log['정규화_티커'].nunique()}개")
+
+        if "전략태그" in trade_log.columns and trade_log["전략태그"].notna().any():
+            with st.expander("📊 전략 태그별 거래 분포"):
+                st.bar_chart(trade_log["전략태그"].dropna().value_counts())
+
+        st.divider()
+
+        # ── AI 맞춤 투자 전략 프롬프트 ──
+        st.markdown("#### 🤖 AI 맞춤 투자 전략 프롬프트")
+        st.caption("아래 텍스트를 복사하여 ChatGPT, Claude, Gemini 등에 붙여넣고 내 거래 이력 기반 맞춤형 투자 조언을 받으세요.")
+
+        j_lines = [
+            f"[매매일지 기반 투자 전략 분석 요청] ({get_kst_now().strftime('%Y-%m-%d %H:%M KST')})",
+            f"현재 시장 심리: CNN Fear & Greed {cnn_score} ({cnn_rating}) | SPY RSI(14) {fmt(spy_rsi_val, dig=1)}",
+            "", "【현재 포지션 요약】",
+        ]
+        if positions:
+            active = {k: v for k, v in positions.items() if v["보유수량"] > 0}
+            closed = {k: v for k, v in positions.items() if v["보유수량"] <= 0 and v["실현손익"] != 0}
+            if active:
+                for tk, ps in active.items():
+                    rg = ps["지역"]
+                    a_str = f"${ps['평균매수가']:,.2f}" if rg == "미국" else f"{int(round(ps['평균매수가'])):,}원"
+                    cp = st.session_state.journal_prices.get(tk)
+                    cp_str = ""
+                    if cp:
+                        cp_str = f" | 현재가 ${cp:,.2f}" if rg == "미국" else f" | 현재가 {int(cp):,}원"
+                        ur = (cp - ps['평균매수가']) / ps['평균매수가'] * 100
+                        cp_str += f" ({'+' if ur >= 0 else ''}{ur:.1f}%)"
+                    j_lines += [f"", f"▶ {tk} ({rg}) — 보유 {ps['보유수량']}주, 평균매수가 {a_str}{cp_str}"]
+                    tk_trades = trade_log[trade_log["정규화_티커"] == tk].tail(5)
+                    for _, tr in tk_trades.iterrows():
+                        tg = tr.get("전략태그", "")
+                        tg_s = f" [{tg}]" if tg else ""
+                        p_s = f"${float(tr['가격']):,.2f}" if rg == "미국" else f"{int(float(tr['가격'])):,}원"
+                        j_lines.append(f"  - [{str(tr['거래일시'])[:10]}] {tr['거래유형']} {int(tr['수량'])}주 @ {p_s}{tg_s}")
+            else:
+                j_lines.append("현재 보유 포지션 없음")
+            if closed:
+                j_lines += ["", "【청산 완료 종목】"]
+                for tk, ps in closed.items():
+                    rg = ps["지역"]
+                    r_s = f"${ps['실현손익']:,.2f}" if rg == "미국" else f"{int(round(ps['실현손익'])):,}원"
+                    j_lines.append(f"▶ {tk} — 실현손익 {'+' if ps['실현손익'] >= 0 else ''}{r_s}")
+        j_lines += [
+            "", "【분석 요청사항】",
+            "1. [포지션 진단] 현재 보유 종목들의 평균 매수가 대비 현재 시장 상황을 고려하여, 각 포지션의 건전성(수익/손실 구간)과 리스크를 평가해 줘.",
+            "",
+            "2. [거래 패턴 분석] 내 매수/매도 이력(전략 태그 포함)을 바탕으로 투자 습관(타이밍, 분할매수 여부, 손절/익절 패턴)을 분석하고 개선점을 조언해 줘.",
+            "",
+            "3. [포트폴리오 밸런스] 보유 종목들의 섹터/지역 분산도를 평가하고, 리밸런싱이 필요한 부분을 짚어줘.",
+            "",
+            "4. [액션 플랜] 현재 시장 심리(F&G, SPY RSI)와 내 포지션을 종합하여, '추가 매수', '관망', '일부 익절/손절' 해야 할 종목을 구체적으로 추천하고 목표가/손절가를 제시해 줘.",
+            "",
+            "5. [리스크 관리] 포트폴리오 전체의 최대 손실 시나리오와 헷지 전략을 제안해 줘.",
+        ]
+        st.code("\n".join(j_lines), language="text")
+
+    else:
+        st.info("📝 아직 기록된 거래가 없습니다. 위 폼에서 첫 거래를 기록해 보세요!")
+
+    st.caption(f"📁 저장 위치: {TRADE_LOG_PATH}")
+
 with tab2:
     st.subheader("🌐 글로벌 매크로 및 시장 심리")
 
@@ -1394,7 +1784,7 @@ with tab2:
         col4.metric("CNN Fear & Greed", "N/A", cnn_rating)
 
     st.divider()
-    st.markdown("#### 🧭 시장 진단 시스템 v20.4 — 이중 레이어 구조")
+    st.markdown("#### 🧭 시장 진단 시스템 v20.6 — 이중 레이어 구조")
     st.info(
         "**📌 이 시스템은 두 가지 질문에 각각 답합니다.**\n\n"
         "**[레이어 1] 위험 탐지기** — *'지금 폭락이 시작되려는가?'* "
@@ -1601,11 +1991,19 @@ with tab1:
 
     all_data, failed_queries = [], []
     with st.spinner("분석 중 (재무제표 교차 검증 포함)..."):
-        for region, q in queries:
+        def fetch_stock(region, q):
             d = get_stock_data(q, is_kr=(region == "한국"), fast_mode=False)
             d["Region"] = region
-            if not d.get("error"): all_data.append(d)
-            else: failed_queries.append(q)
+            return q, d
+            
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [executor.submit(fetch_stock, region, q) for region, q in queries]
+            for future in concurrent.futures.as_completed(futures):
+                q, d = future.result()
+                if not d.get("error"): 
+                    all_data.append(d)
+                else: 
+                    failed_queries.append(q)
 
     if failed_queries:
         st.warning(f"⚠️ 데이터 조회 실패 (오타 확인): {', '.join(failed_queries)}")
@@ -1815,12 +2213,12 @@ with tab4:
                 st.warning("⚠️ 현재 조건(지하실 역추세 및 실적/마진 기준)을 통과한 진성 우량주가 이 섹터에 존재하지 않습니다.")
 
 with tab3:
-    st.subheader("🤖 AI 참모 전용 구조화 리포트 v20.4 (진바닥 판독기 연동)")
+    st.subheader("🤖 AI 참모 전용 구조화 리포트 v20.6 (진바닥 판독기 연동)")
     st.caption("아래 텍스트를 복사하여 ChatGPT, Claude, Gemini 등에 붙여넣고 심층 분석을 받아보세요.")
     
     now = get_kst_now().strftime('%Y-%m-%d %H:%M:%S KST')
     lines = [
-        f"[11원칙 퀀트 분석 리포트 v20.4] ({now})",
+        f"[11원칙 퀀트 분석 리포트 v20.6] ({now})",
         f"- CNN F&G (시장 심리): {cnn_score} ({cnn_rating})",
         f"- SPY RSI(14) (시장 과열도): {fmt(spy_rsi_val, dig=1)}",
         "",
