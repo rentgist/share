@@ -751,7 +751,7 @@ def calculate_smart_target(d, ai_sig):
     elif "과매수"   in ai_sig: return bb_upper,  "볼린저 상단"
     else: return "-", "홀딩(Wait)"
 
-# 🔥 텐배거 로직 — 턴어라운드 및 알짜 소부장 예외 조항 신설
+# 🔥 텐배거 로직 — 턴어라운드, 알짜 소부장, 그리고 Rule of 40 도입
 def get_tenbagger_signal(d):
     mcap     = float(d.get('MarketCap') or 0)
     region   = d.get('Region')
@@ -761,16 +761,22 @@ def get_tenbagger_signal(d):
     gap_high = float(d.get('Gap_High')   or 0)
     op_m     = d.get('Op_Margin')
     is_turnaround = d.get("Is_Turnaround", False)
+    rule_40  = d.get("Rule_of_40")
 
     if region == "미국" and mcap >= 100_000_000_000:   return "-"
     if region == "한국" and mcap >= 10_000_000_000_000: return "-"
     
-    # 예외 조항: 매출 성장이 20% 미만이라도, 완벽한 턴어라운드거나 독점적 마진(20% 이상)이면 1차 통과
+    # Rule of 40 달성 시 묻지도 따지지도 않고 강력한 가산점 및 예외 통과
+    is_rule_40_passed = rule_40 is not None and rule_40 >= 40
+
+    # 예외 조항: 매출 성장이 20% 미만이라도, 완벽한 턴어라운드거나 독점적 마진(20% 이상)이거나 Rule of 40 통과면 1차 통과
     if rev_g < 0.20:
         is_exception = False
         if is_turnaround:
             is_exception = True
         elif op_m is not None and float(op_m) >= 0.20:
+            is_exception = True
+        elif is_rule_40_passed:
             is_exception = True
             
         if not is_exception:
@@ -783,9 +789,10 @@ def get_tenbagger_signal(d):
     if earn_g >= 0.30 or is_turnaround: points += 1    
     if 0 < peg <= 1.5: points += 1  
     if op_m is not None and float(op_m) >= 0.20: points += 1 # 독점적 마진 가산점
+    if is_rule_40_passed: points += 2 # Rule of 40 달성 시 초강력 가산점
     
-    if points >= 3: return "🔥 기관 최선호 대장주"
-    if points >= 1: return "🌱 우량 고성장주"
+    if points >= 3: return "🔥 기관 최선호 대장주 (Rule of 40)" if is_rule_40_passed else "🔥 기관 최선호 대장주"
+    if points >= 1: return "🌱 우량 고성장주 (Rule of 40)" if is_rule_40_passed else "🌱 우량 고성장주"
     return "-"
 
 # ─────────────────────────────────────────
@@ -876,6 +883,20 @@ def get_stock_data(query, is_kr=False, fast_mode=False):
         
         base["FCF_Yield"] = (fcf / mcap) if fcf and mcap else None
         base["FCFPS"] = (fcf / shares) if fcf and shares else None
+        
+        rev_g = info.get('revenueGrowth')
+        op_m = info.get('operatingMargins')
+        if rev_g is not None and op_m is not None:
+            base["Rule_of_40"] = (rev_g + op_m) * 100
+        else:
+            base["Rule_of_40"] = None
+            
+        base["EV_EBITDA"] = info.get('enterpriseToEbitda')
+        ev = info.get('enterpriseValue')
+        if ev and fcf and fcf > 0:
+            base["EV_FCF"] = ev / fcf
+        else:
+            base["EV_FCF"] = None
 
         base["ROIC"] = None
         base["Buybacks"] = None
@@ -921,10 +942,10 @@ def get_stock_data(query, is_kr=False, fast_mode=False):
 
             if not is_kr:
                 try:
-                    earns = tk.get_earnings_dates(limit=10)
+                    earns = tk.get_earnings_dates(limit=12)
                     beats, valid = 0, 0
                     if earns is not None and not earns.empty:
-                        past = earns[earns.index < pd.Timestamp.now(tz='UTC')].head(4)
+                        past = earns[earns.index < pd.Timestamp.now(tz='UTC')].head(8)
                         for _, row in past.iterrows():
                             rep = row.get('Reported EPS')
                             est = row.get('Estimate')
@@ -932,7 +953,8 @@ def get_stock_data(query, is_kr=False, fast_mode=False):
                                 valid += 1
                                 if rep > est: beats += 1
                         if valid > 0:
-                            base["Earnings_Beat"] = f"{valid}전 {beats}승"
+                            win_rate = (beats / valid) * 100
+                            base["Earnings_Beat"] = f"{valid}전 {beats}승 ({win_rate:.0f}%)"
                         future = earns[earns.index > pd.Timestamp.now(tz='UTC')].sort_index()
                         if not future.empty:
                             base["Next_Earning"] = future.index[0].strftime('%Y-%m-%d')
@@ -1672,6 +1694,9 @@ with tab1:
 
             fin_rows.append({
                 "종목":          d["Name"],
+                "Rule of 40":    fmt(d.get("Rule_of_40"), "%", dig=1) if d.get("Rule_of_40") is not None else "N/A",
+                "EV/EBITDA":     fmt(d.get("EV_EBITDA"), "x", dig=1),
+                "EV/FCF":        fmt(d.get("EV_FCF"), "x", dig=1),
                 "매출총이익률":  pct(d.get("Gross_Margin")),
                 "영업이익률":    pct(d.get("Op_Margin")),
                 "ROIC":          pct(d.get("ROIC")),
@@ -1687,7 +1712,7 @@ with tab1:
                 "종합 리스크 등급": d.get("Risk_Grade", "N/A"),
                 "다음 실적일":     d.get("Next_Earning", "N/A"),
                 "내부자 매수":     d.get("Insider_Buy",  "N/A"),
-                "과거 어닝":       d.get("Earnings_Beat","N/A"),
+                "어닝 서프라이즈 (최근 8Q)": d.get("Earnings_Beat","N/A"),
                 "공매도 비율":     d.get("Short_Interest","N/A"),
                 "Beta":           d.get("Beta",          "N/A"),
                 "최신 헤드라인":   (str(d.get("Latest_News",""))[:50]+"...") if len(str(d.get("Latest_News",""))) > 50 else d.get("Latest_News","N/A"),
