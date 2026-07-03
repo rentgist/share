@@ -6,7 +6,7 @@ import datetime
 import FinanceDataReader as fdr
 import requests
 
-st.set_page_config(page_title="11원칙 퀀트 대시보드 v20.4", page_icon="🧭", layout="wide")
+st.set_page_config(page_title="11원칙 퀀트 대시보드 v21.0", page_icon="🧭", layout="wide")
 
 # ─────────────────────────────────────────
 # 한글 이름 → 티커 매핑
@@ -1047,8 +1047,8 @@ def color_df(val):
 # ─────────────────────────────────────────
 # UI — 전역 데이터 선초기화
 # ─────────────────────────────────────────
-st.title("🧭 11원칙 퀀트 트레이딩 대시보드 v20.4")
-st.caption("v20.4: 텐배거 턴어라운드 예외 신설 + 한국 위험 탐지기 완벽 분리 + 확정 일정 캘린더 도입")
+st.title("🧭 11원칙 퀀트 트레이딩 대시보드 v21.0")
+st.caption("v21.0: 텐배거 Rule of 40 신설 + 자본집약 기업 EV 밸류에이션 + 어닝 서프라이즈 8Q 확장")
 
 cnn_score, cnn_rating, cnn_history = get_real_cnn_fg()
 sector_base = get_sector_baseline()
@@ -1431,7 +1431,7 @@ with tab2:
         col4.metric("CNN Fear & Greed", "N/A", cnn_rating)
 
     st.divider()
-    st.markdown("#### 🧭 시장 진단 시스템 v20.4 — 이중 레이어 구조")
+    st.markdown("#### 🧭 시장 진단 시스템 v21.0 — 이중 레이어 구조")
     st.info(
         "**📌 이 시스템은 두 가지 질문에 각각 답합니다.**\n\n"
         "**[레이어 1] 위험 탐지기** — *'지금 폭락이 시작되려는가?'* "
@@ -1855,12 +1855,12 @@ with tab4:
                 st.warning("⚠️ 현재 조건(지하실 역추세 및 실적/마진 기준)을 통과한 진성 우량주가 이 섹터에 존재하지 않습니다.")
 
 with tab3:
-    st.subheader("🤖 AI 참모 전용 구조화 리포트 v20.4 (진바닥 판독기 연동)")
+    st.subheader("🤖 AI 참모 전용 구조화 리포트 v21.0 (진바닥 판독기 연동)")
     st.caption("아래 텍스트를 복사하여 ChatGPT, Claude, Gemini 등에 붙여넣고 심층 분석을 받아보세요.")
     
     now = get_kst_now().strftime('%Y-%m-%d %H:%M:%S KST')
     lines = [
-        f"[11원칙 퀀트 분석 리포트 v20.4] ({now})",
+        f"[11원칙 퀀트 분석 리포트 v21.0] ({now})",
         f"- CNN F&G (시장 심리): {cnn_score} ({cnn_rating})",
         f"- SPY RSI(14) (시장 과열도): {fmt(spy_rsi_val, dig=1)}",
         "",
