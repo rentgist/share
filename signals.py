@@ -1,31 +1,155 @@
 import pandas as pd
 import numpy as np
-from indicators import calc_rsi, get_rolling_rsi
+from indicators import calc_rsi, calc_macd, get_rolling_rsi
 
-# ─────────────────────────────────────────
-# 🇺🇸 레이어 1: 미국 전용 위험 탐지기
-# ─────────────────────────────────────────
+# ═════════════════════════════════════════
+# 공용 상수 (실시간 & 백테스트가 반드시 같은 값 사용)
+# ═════════════════════════════════════════
+GRIND_DOWN_RATIO   = 0.55   # 최근 20일 중 하락 마감일 비율 임계값
+DIV_RSI_MARGIN     = 2.0    # RSI 다이버전스 인정 마진
+KNIFE_1D_RET       = -2.5   # 떨어지는 칼날: 당일 급락 임계값 (%)
+KNIFE_MA5_GAP      = -4.0   # 떨어지는 칼날: 5일선 이탈 임계값 (%)
+KNIFE_PENALTY      = 20     # 칼날 감지 시 차감 점수
+
+# ═════════════════════════════════════════
+# 공용 헬퍼
+# ═════════════════════════════════════════
+def credit_spread_ratio(hyg_hist, ief_hist, min_len=50):
+    """HYG/IEF 비율 시계열 (신용 스프레드 프록시). 단일 진실 원천."""
+    if hyg_hist is None or ief_hist is None or hyg_hist.empty or ief_hist.empty:
+        return None
+    try:
+        df = pd.concat([hyg_hist['Close'], ief_hist['Close']], axis=1).ffill().dropna()
+        if len(df) < min_len:
+            return None
+        df.columns = ['HYG', 'IEF']
+        return df['HYG'] / df['IEF']
+    except Exception:
+        return None
+
+
+def analyze_market_structure(close):
+    """
+    🧠 시장 구조/국면(Regime) 분석기 — v23.0 신규 핵심 모듈.
+
+    기존 탐지기의 맹점 보완:
+    - 🐻 Grinding Bear: VIX가 안 뛰는 '미지근한 지속 하락' (하락일 비율 + 50일선 기울기로 감지)
+    - 🌊 Whipsaw: 변동성은 큰데 방향이 없는 '오르면서 빠지는' 횡보 (실현변동성 vs 순변화 괴리)
+    - 🏗️ Basing: 바닥 다지기 (저점 높이기 + 20일선 탈환)
+    - RSI 상승 다이버전스: 가격은 신저점인데 RSI 저점은 높아짐 → 매도 에너지 소진
+    """
+    out = {
+        "regime": "⚪ 판별 불가", "drawdown": 0.0,
+        "is_panic": False, "is_grind": False, "is_whipsaw": False, "is_basing": False,
+        "bullish_div": False, "higher_low": False, "ma20_reclaim": False,
+        "down_ratio": None, "days_since_high": None, "ma50_slope": 0.0,
+        "dead_cross": False, "realized_vol": None,
+    }
+    if close is None or len(close) < 60:
+        return out
+
+    price     = float(close.iloc[-1])
+    high_252  = float(close.rolling(252, min_periods=1).max().iloc[-1])
+    drawdown  = (price / high_252 - 1) * 100
+    out["drawdown"] = drawdown
+
+    rets   = close.pct_change()
+    ret_1d = float(rets.iloc[-1]) * 100
+
+    # 최근 20일 중 하락 마감일 비율 — '조용한 자금 이탈' 감지의 핵심
+    down_ratio = float((rets.iloc[-20:] < 0).mean())
+    out["down_ratio"] = round(down_ratio * 100, 0)
+
+    # 52주 고점 이후 경과 거래일
+    window = close.iloc[-252:]
+    out["days_since_high"] = int(len(window) - 1 - int(np.argmax(window.values)))
+
+    ma20 = float(close.rolling(20).mean().iloc[-1])
+    ma50 = float(close.rolling(50).mean().iloc[-1]) if len(close) >= 50 else price
+    ma200 = float(close.rolling(200).mean().iloc[-1]) if len(close) >= 200 else None
+
+    if len(close) >= 71:
+        ma50_series = close.rolling(50).mean()
+        out["ma50_slope"] = round((float(ma50_series.iloc[-1]) / float(ma50_series.iloc[-21]) - 1) * 100, 2)
+
+    if ma200 is not None:
+        out["dead_cross"] = (ma50 < ma200) and (price < ma200)
+
+    # 실현 변동성 (20일, 연율화 %) — VIX가 못 잡는 실제 가격 요동 측정
+    realized_vol = float(rets.iloc[-20:].std() * np.sqrt(252) * 100)
+    out["realized_vol"] = round(realized_vol, 1)
+
+    net_20d = (price / float(close.iloc[-21]) - 1) * 100 if len(close) >= 21 else 0.0
+
+    # ── RSI 다이버전스 & 저점 구조 (최근 60일을 전반/후반 30일로 나눠 비교) ──
+    rsi_series = get_rolling_rsi(close, 14)
+    recent_p = close.iloc[-60:]
+    recent_r = rsi_series.iloc[-60:]
+    p1, p2 = float(recent_p.iloc[:30].min()), float(recent_p.iloc[30:].min())
+    r1, r2 = float(recent_r.iloc[:30].min()), float(recent_r.iloc[30:].min())
+
+    if p2 < p1 and r2 > r1 + DIV_RSI_MARGIN:
+        out["bullish_div"] = True     # 가격 신저점 + RSI 저점 상승 = 매도세 소진 신호
+    if p2 > p1 * 1.005:
+        out["higher_low"] = True      # 저점 높이기 (바닥 구조의 필요조건)
+    out["ma20_reclaim"] = price > ma20
+
+    # ── 국면(Regime) 판별 ──
+    is_panic   = (ret_1d <= KNIFE_1D_RET) or (drawdown <= -15 and realized_vol >= 25)
+    is_grind   = (drawdown <= -7) and (down_ratio >= GRIND_DOWN_RATIO) and (out["ma50_slope"] < 0) and not is_panic
+    is_whipsaw = (realized_vol >= 18) and (abs(net_20d) < 2.5) and not is_panic and not is_grind
+    is_basing  = (drawdown <= -10) and out["higher_low"] and out["ma20_reclaim"] and not is_panic
+
+    out.update({"is_panic": is_panic, "is_grind": is_grind,
+                "is_whipsaw": is_whipsaw, "is_basing": is_basing})
+
+    if drawdown > -5 and not is_whipsaw:
+        out["regime"] = f"📈 고점권/상승 추세 (DD {drawdown:.1f}%)"
+    elif is_panic:
+        out["regime"] = f"🚨 급락 패닉 (DD {drawdown:.1f}%, 실현변동성 {realized_vol:.0f}%)"
+    elif is_basing:
+        out["regime"] = f"🏗️ 바닥 다지기 진행 (DD {drawdown:.1f}%, 저점 높이는 중)"
+    elif is_grind:
+        out["regime"] = f"🐻 완만한 하락 — Grinding Bear (DD {drawdown:.1f}%, 하락일 {down_ratio*100:.0f}%)"
+    elif is_whipsaw:
+        out["regime"] = f"🌊 고변동 횡보 — Whipsaw (DD {drawdown:.1f}%, 변동성 {realized_vol:.0f}%)"
+    elif drawdown > -12:
+        out["regime"] = f"📉 단기 조정 (DD {drawdown:.1f}%)"
+    elif drawdown > -20:
+        out["regime"] = f"🟠 깊은 조정 (DD {drawdown:.1f}%)"
+    else:
+        out["regime"] = f"🔴 약세장 진행 (DD {drawdown:.1f}%)"
+
+    return out
+
+
+# ═════════════════════════════════════════
+# 🇺🇸 레이어 1: 미국 전용 위험 탐지기 (v23.0: 스텔스 약세장 레이어 추가)
+# ═════════════════════════════════════════
 def calculate_us_risk_radar(vix_hist, vix3m_hist, hyg_hist, ief_hist, spy_hist):
     alerts = []
     danger_count = 0
 
-    curr_vix   = float(vix_hist['Close'].iloc[-1])  if not vix_hist.empty  else None
+    curr_vix   = float(vix_hist['Close'].iloc[-1])   if not vix_hist.empty  else None
     curr_vix3m = float(vix3m_hist['Close'].iloc[-1]) if not vix3m_hist.empty else None
-    
+
+    # ── ① VIX 기간구조 (백워데이션 = 단기 패닉) ──
     if curr_vix and curr_vix3m:
         if curr_vix > curr_vix3m * 1.05:
             alerts.append(("🔴", f"VIX 백워데이션 발생 ({curr_vix:.1f} > {curr_vix3m:.1f}). 단기 패닉 초입."))
             danger_count += 2
         elif curr_vix > curr_vix3m:
-            alerts.append(("🟠", f"VIX 백워데이션 진입 중. 예비 주시."))
+            alerts.append(("🟠", "VIX 백워데이션 진입 중. 예비 주시."))
             danger_count += 1
         else:
-            alerts.append(("🟢", f"VIX 콘탱고 정상. 시장 구조 안정."))
+            alerts.append(("🟢", "VIX 콘탱고 정상. 시장 구조 안정."))
 
+    # ── ② VIX 상대 급등 + 절대 레벨 ──
+    vix_spike = 0
     if curr_vix:
         vix_ma20 = float(vix_hist['Close'].rolling(20).mean().iloc[-1]) if len(vix_hist) >= 20 else curr_vix
         vix_spike = (curr_vix - vix_ma20) / vix_ma20 * 100 if vix_ma20 > 0 else 0
-        
+
         if vix_spike >= 40:
             alerts.append(("🚨", f"VIX 폭등 경보 (+{vix_spike:.1f}% vs 20일평균) — 기습적인 공포장 진입."))
             danger_count += 2
@@ -43,33 +167,31 @@ def calculate_us_risk_radar(vix_hist, vix3m_hist, hyg_hist, ief_hist, spy_hist):
             if vix_spike < 20:
                 alerts.append(("🟢", f"VIX {curr_vix:.1f} — 평온 구간."))
 
+    # ── ③ 신용 스프레드 (공용 헬퍼 — 중복 로직 제거) ──
     credit_danger = False
-    if not hyg_hist.empty and not ief_hist.empty:
-        try:
-            df_c = pd.concat([hyg_hist['Close'], ief_hist['Close']], axis=1).ffill().dropna()
-            if len(df_c) >= 50:
-                df_c.columns = ['HYG', 'IEF']
-                df_c['R'] = df_c['HYG'] / df_c['IEF']
-                ma20 = float(df_c['R'].rolling(20).mean().iloc[-1])
-                ma50 = float(df_c['R'].rolling(50).mean().iloc[-1])
-                curr = float(df_c['R'].iloc[-1])
-                if curr < ma50 * 0.97:
-                    alerts.append(("🔴", f"신용 스프레드 위험 이탈. 기관 투매 감지."))
-                    danger_count += 2
-                    credit_danger = True
-                elif curr < ma20:
-                    alerts.append(("🟠", f"신용 스프레드 단기 이탈. 주시 필요."))
-                    danger_count += 1
-                    credit_danger = True
-                else:
-                    alerts.append(("🟢", "신용 스프레드 안정 (정배열)."))
-        except:
-            alerts.append(("⚪", "신용 스프레드 산출 불가."))
+    ratio = credit_spread_ratio(hyg_hist, ief_hist)
+    if ratio is not None:
+        ma20 = float(ratio.rolling(20).mean().iloc[-1])
+        ma50 = float(ratio.rolling(50).mean().iloc[-1])
+        curr = float(ratio.iloc[-1])
+        if curr < ma50 * 0.97:
+            alerts.append(("🔴", "신용 스프레드 위험 이탈. 기관 투매 감지."))
+            danger_count += 2
+            credit_danger = True
+        elif curr < ma20:
+            alerts.append(("🟠", "신용 스프레드 단기 이탈. 주시 필요."))
+            danger_count += 1
+            credit_danger = True
+        else:
+            alerts.append(("🟢", "신용 스프레드 안정 (정배열)."))
+    else:
+        alerts.append(("⚪", "신용 스프레드 산출 불가."))
 
+    # ── ④ SPY 급락 & 킬 스위치 교차 검증 ──
     if not spy_hist.empty and len(spy_hist) >= 6:
         spy_1d_ret = (float(spy_hist['Close'].iloc[-1]) / float(spy_hist['Close'].iloc[-2]) - 1) * 100
         spy_5d_ret = (float(spy_hist['Close'].iloc[-1]) / float(spy_hist['Close'].iloc[-6]) - 1) * 100
-        
+
         if spy_1d_ret <= -1.5 or spy_5d_ret <= -3.0:
             if credit_danger:
                 alerts.append(("🚨", f"글로벌 킬 스위치 발동: SPY 급락({spy_1d_ret:.1f}%) & 신용 경색. 진짜 위기."))
@@ -79,13 +201,39 @@ def calculate_us_risk_radar(vix_hist, vix3m_hist, hyg_hist, ief_hist, spy_hist):
         else:
             alerts.append(("🟢", f"SPY 단기 매크로 추세 안정적 ({spy_1d_ret:+.1f}%)."))
 
-    if danger_count >= 6:
+    # ── ⑤ 🆕 스텔스 약세장 레이어 (급등이 아닌 '구조'로 위험 감지) ──
+    if not spy_hist.empty:
+        struct = analyze_market_structure(spy_hist['Close'])
+        dd = struct["drawdown"]
+
+        if struct["is_grind"]:
+            alerts.append(("🔴", f"스텔스 약세장(Grinding Bear) 감지 — VIX 급등 없이 최근 20일 중 "
+                                 f"{struct['down_ratio']:.0f}%가 하락 마감, 50일선 기울기 {struct['ma50_slope']:+.1f}%. "
+                                 f"조용한 자금 이탈이 진행 중."))
+            danger_count += 2
+
+        if dd <= -8 and curr_vix is not None and curr_vix < 20:
+            alerts.append(("🟠", f"VIX 안일(Complacency) 다이버전스 — 지수는 고점 대비 {dd:.1f}% 빠졌는데 "
+                                 f"VIX {curr_vix:.1f}로 공포 미반영. 헷지 수요 부재 = 추가 하락 시 무방비."))
+            danger_count += 1
+
+        if struct["dead_cross"]:
+            alerts.append(("🔴", "장기 추세 훼손 — 50일선 < 200일선 (데드크로스) & 주가 200일선 이탈."))
+            danger_count += 1
+
+        if struct["is_whipsaw"]:
+            alerts.append(("🟡", f"고변동 횡보(Whipsaw) 국면 — 실현변동성 {struct['realized_vol']:.0f}%인데 "
+                                 f"20일 순변화는 미미. 추세 매매 실패 확률 높음 → 현금 비중 유지 유리."))
+            danger_count += 1
+
+    # 감지 항목이 늘어난 만큼 등급 컷도 상향 (과잉 경보 방지)
+    if danger_count >= 7:
         grade = "🚨 글로벌 마스터 킬 스위치 작동 — 시스템적 유동성 위기."
         color = "#ff0000"
-    elif danger_count >= 4:
+    elif danger_count >= 5:
         grade = "🔴 글로벌 위기 경보 — 폭락 초입 가능성."
         color = "#ff4b4b"
-    elif danger_count >= 2:
+    elif danger_count >= 3:
         grade = "🟠 글로벌 주의 단계 — 신규 진입 자제."
         color = "#ff9900"
     elif danger_count >= 1:
@@ -97,18 +245,24 @@ def calculate_us_risk_radar(vix_hist, vix3m_hist, hyg_hist, ief_hist, spy_hist):
 
     return grade, color, alerts
 
+
+# ═════════════════════════════════════════
+# 🇰🇷 레이어 1: 한국 전용 위험 탐지기
+# (v23.0: 중복 정의 제거 — 정교 버전(MACD+VKOSPI 이격) 단일화 + 스텔스 감지 추가)
+# ═════════════════════════════════════════
 def calculate_kr_risk_radar(vkospi_hist, usdkrw_hist, kospi_hist):
     alerts = []
     danger_count = 0
 
+    # ── ① 환율: 급등 + RSI + MACD 추세 교차 검증 (조기경보) ──
     if not usdkrw_hist.empty and len(usdkrw_hist) >= 20:
-        curr_krw = float(usdkrw_hist['Close'].iloc[-1])
+        curr_krw   = float(usdkrw_hist['Close'].iloc[-1])
         krw_5d_ago = float(usdkrw_hist['Close'].iloc[-6])
-        krw_surge = (curr_krw - krw_5d_ago) / krw_5d_ago * 100
-        krw_rsi = calc_rsi(usdkrw_hist['Close'], 14)
-        krw_ma20 = float(usdkrw_hist['Close'].rolling(20).mean().iloc[-1])
-        krw_macd_val, krw_macd_dir = calc_macd(usdkrw_hist['Close'])
-        
+        krw_surge  = (curr_krw - krw_5d_ago) / krw_5d_ago * 100
+        krw_rsi    = calc_rsi(usdkrw_hist['Close'], 14)
+        krw_ma20   = float(usdkrw_hist['Close'].rolling(20).mean().iloc[-1])
+        _, krw_macd_dir = calc_macd(usdkrw_hist['Close'])
+
         if krw_surge >= 1.5 or (curr_krw > krw_ma20 and krw_rsi and krw_rsi >= 65):
             alerts.append(("🔴", f"환율 단기 폭등/추세이탈 (+{krw_surge:.1f}%, RSI {krw_rsi:.1f}) — 외국인 엑소더스 징후."))
             danger_count += 2
@@ -118,13 +272,14 @@ def calculate_kr_risk_radar(vkospi_hist, usdkrw_hist, kospi_hist):
         else:
             alerts.append(("🟢", f"환율 안정적 ({curr_krw:,.1f}원) — 외인 수급 이탈 우려 낮음."))
 
+    # ── ② VKOSPI: 20일 이격(spike) + 절대 레벨 + 5일 급등 ──
     if not vkospi_hist.empty and len(vkospi_hist) >= 20:
-        curr_vk = float(vkospi_hist['Close'].iloc[-1])
-        vk_ma20 = float(vkospi_hist['Close'].rolling(20).mean().iloc[-1])
+        curr_vk  = float(vkospi_hist['Close'].iloc[-1])
+        vk_ma20  = float(vkospi_hist['Close'].rolling(20).mean().iloc[-1])
         vk_spike = (curr_vk - vk_ma20) / vk_ma20 * 100 if vk_ma20 > 0 else 0
         vk_5d_ago = float(vkospi_hist['Close'].iloc[-6])
-        vk_surge = (curr_vk - vk_5d_ago) / vk_5d_ago * 100 if vk_5d_ago > 0 else 0
-        
+        vk_surge  = (curr_vk - vk_5d_ago) / vk_5d_ago * 100 if vk_5d_ago > 0 else 0
+
         if vk_spike >= 30 or curr_vk >= 25 or vk_surge >= 25:
             alerts.append(("🔴", f"VKOSPI 급등 ({curr_vk:.1f}, +{vk_spike:.1f}% vs 20일평균) — 기관/외인 하락 헷지 팽창."))
             danger_count += 2
@@ -134,6 +289,7 @@ def calculate_kr_risk_radar(vkospi_hist, usdkrw_hist, kospi_hist):
         else:
             alerts.append(("🟢", f"VKOSPI 평온 ({curr_vk:.1f}) — 하방 압력 낮음."))
 
+    # ── ③ KOSPI 5일 낙폭 ──
     if not kospi_hist.empty and len(kospi_hist) >= 6:
         k_5d_ret = (float(kospi_hist['Close'].iloc[-1]) / float(kospi_hist['Close'].iloc[-6]) - 1) * 100
         if k_5d_ret <= -4:
@@ -143,6 +299,17 @@ def calculate_kr_risk_radar(vkospi_hist, usdkrw_hist, kospi_hist):
             alerts.append(("🟠", f"KOSPI 5일 하락 ({k_5d_ret:.1f}%) — 단기 매도 우위."))
         else:
             alerts.append(("🟢", f"KOSPI 단기 추세 ({k_5d_ret:+.1f}%) — 안정적."))
+
+    # ── ④ 🆕 KOSPI 스텔스 약세 (미지근한 지속 하락 감지) ──
+    if not kospi_hist.empty:
+        struct = analyze_market_structure(kospi_hist['Close'])
+        if struct["is_grind"]:
+            alerts.append(("🔴", f"KOSPI 스텔스 약세 감지 — 최근 20일 중 {struct['down_ratio']:.0f}%가 하락 마감, "
+                                 f"50일선 우하향 ({struct['ma50_slope']:+.1f}%). 완만한 외인 이탈형 하락."))
+            danger_count += 2
+        elif struct["is_whipsaw"]:
+            alerts.append(("🟡", f"KOSPI 고변동 횡보 — 변동성 {struct['realized_vol']:.0f}% 대비 방향성 부재. 관망 유리."))
+            danger_count += 1
 
     if danger_count >= 5:
         grade = "🔴 한국 위기 경보 — 외인 이탈 및 폭락 초입 우려."
@@ -159,223 +326,183 @@ def calculate_kr_risk_radar(vkospi_hist, usdkrw_hist, kospi_hist):
 
     return grade, color, alerts
 
-# ─────────────────────────────────────────
-# 🔥 신규: 🇰🇷 레이어 1: 한국 전용 위험 탐지기
-# ─────────────────────────────────────────
-def calculate_kr_risk_radar(vkospi_hist, usdkrw_hist, kospi_hist):
-    alerts = []
-    danger_count = 0
 
-    if not usdkrw_hist.empty and len(usdkrw_hist) >= 20:
-        curr_krw = float(usdkrw_hist['Close'].iloc[-1])
-        krw_5d_ago = float(usdkrw_hist['Close'].iloc[-6])
-        krw_surge = (curr_krw - krw_5d_ago) / krw_5d_ago * 100
-        krw_rsi = calc_rsi(usdkrw_hist['Close'], 14)
-        krw_ma20 = float(usdkrw_hist['Close'].rolling(20).mean().iloc[-1])
-        
-        if krw_surge >= 1.5 or (curr_krw > krw_ma20 and krw_rsi and krw_rsi >= 65):
-            alerts.append(("🔴", f"환율 단기 폭등/추세이탈 (+{krw_surge:.1f}%, RSI {krw_rsi:.1f}) — 외국인 엑소더스 징후."))
-            danger_count += 2
-        elif krw_surge >= 0.8 or (krw_rsi and krw_rsi >= 55):
-            alerts.append(("🟠", f"환율 상승세 (+{krw_surge:.1f}%) — 외국인 수급 악화 조기 경보."))
-            danger_count += 1
-        else:
-            alerts.append(("🟢", f"환율 안정적 ({curr_krw:,.1f}원) — 외인 수급 이탈 우려 낮음."))
+# ═════════════════════════════════════════
+# 진바닥 탐지기 — 공용 스코어러
+# (실시간 & 백테스트가 '동일 함수'를 사용 → 점수 스케일 완전 통일)
+# ═════════════════════════════════════════
+def _score_bottom(drawdown, rsi, vix, cnn=None, details=None):
+    """
+    미국 바닥 코어 점수. CNN 유무와 무관하게 항상 '만점 대비 %'로 정규화.
+    → 실시간(CNN 포함, 100점 만점)과 백테스트(CNN 제외, 80점 만점)가 같은 자로 비교 가능.
+    """
+    def _log(msg):
+        if details is not None:
+            details.append(msg)
 
-    if not vkospi_hist.empty and len(vkospi_hist) >= 6:
-        curr_vk = float(vkospi_hist['Close'].iloc[-1])
-        vk_5d_ago = float(vkospi_hist['Close'].iloc[-6])
-        vk_surge = (curr_vk - vk_5d_ago) / vk_5d_ago * 100 if vk_5d_ago > 0 else 0
-        
-        if curr_vk >= 25 or vk_surge >= 25:
-            alerts.append(("🔴", f"VKOSPI 급등 ({curr_vk:.1f}, +{vk_surge:.1f}%) — 기관/외인 하락 헷지 증가."))
-            danger_count += 2
-        elif curr_vk >= 18 or vk_surge >= 15:
-            alerts.append(("🟠", f"VKOSPI 불안 ({curr_vk:.1f}) — 파생 변동성 확대."))
-            danger_count += 1
-        else:
-            alerts.append(("🟢", f"VKOSPI 평온 ({curr_vk:.1f}) — 하방 압력 낮음."))
+    s, maxs = 0, 80  # Drawdown 35 + RSI 20 + VIX 25
 
-    if not kospi_hist.empty and len(kospi_hist) >= 6:
-        k_5d_ret = (float(kospi_hist['Close'].iloc[-1]) / float(kospi_hist['Close'].iloc[-6]) - 1) * 100
-        if k_5d_ret <= -4:
-            alerts.append(("🔴", f"KOSPI 5일 급락 ({k_5d_ret:.1f}%) — 프로그램 및 동반 투매 감지."))
-            danger_count += 1
-        elif k_5d_ret <= -2:
-            alerts.append(("🟠", f"KOSPI 5일 하락 ({k_5d_ret:.1f}%) — 단기 매도 우위."))
-        else:
-            alerts.append(("🟢", f"KOSPI 단기 추세 ({k_5d_ret:+.1f}%) — 안정적."))
+    if drawdown <= -25: s += 35; _log(f"🟢 대세 하락장 낙폭 ({drawdown:.1f}%) [+35/35]")
+    elif drawdown <= -15: s += 22; _log(f"🟢 깊은 조정 ({drawdown:.1f}%) [+22/35]")
+    elif drawdown <= -8: s += 10; _log(f"🟡 단기 조정 ({drawdown:.1f}%) [+10/35]")
+    else: _log(f"⚪ 고점 근처 ({drawdown:.1f}%) [+0/35]")
 
-    if danger_count >= 4:
-        grade = "🔴 한국 위기 경보 — 외인 이탈 및 폭락 초입 우려."
-        color = "#ff4b4b"
-    elif danger_count >= 2:
-        grade = "🟠 한국 주의 단계 — 수급/환율 불안정."
-        color = "#ff9900"
-    elif danger_count >= 1:
-        grade = "🟡 한국 관찰 단계 — 경미한 수급 꼬임 감지."
-        color = "#fcca46"
-    else:
-        grade = "🟢 한국 이상 없음 — 국내 수급 환경 안정적."
-        color = "#21c354"
+    if rsi is not None:
+        if rsi <= 30: s += 20; _log(f"🟢 RSI 극단 과매도 ({rsi:.1f}) [+20/20]")
+        elif rsi <= 38: s += 12; _log(f"🟢 RSI 과매도 ({rsi:.1f}) [+12/20]")
+        elif rsi <= 45: s += 5;  _log(f"🟡 RSI 과매도 진입 ({rsi:.1f}) [+5/20]")
+        else: _log(f"⚪ RSI 정상 ({rsi:.1f}) [+0/20]")
 
-    return grade, color, alerts
+    if vix is not None:
+        if vix >= 40: s += 25; _log(f"🟢 VIX 극단 패닉 ({vix:.1f}) [+25/25]")
+        elif vix >= 32: s += 20; _log(f"🟢 VIX 패닉 투매 ({vix:.1f}) [+20/25]")
+        elif vix >= 26: s += 12; _log(f"🟡 VIX 공포 확산 ({vix:.1f}) [+12/25]")
+        elif vix >= 22: s += 5;  _log(f"🟡 VIX 상승 주의 ({vix:.1f}) [+5/25]")
+        else: _log(f"⚪ VIX 평온 ({vix:.1f}) [+0/25]")
 
-# ─────────────────────────────────────────
-# 진바닥 탐지기 (미국/한국)
-# ─────────────────────────────────────────
+    if cnn is not None:
+        maxs += 20
+        if cnn <= 15: s += 20; _log(f"🟢 F&G 역사적 패닉 ({cnn}) [+20/20]")
+        elif cnn <= 25: s += 15; _log(f"🟢 F&G 극단 공포 ({cnn}) [+15/20]")
+        elif cnn <= 35: s += 8;  _log(f"🟡 F&G 공포 구간 ({cnn}) [+8/20]")
+        elif cnn <= 45: s += 3;  _log(f"⚪ F&G 약한 공포 ({cnn}) [+3/20]")
+        else: _log(f"⚪ F&G 중립~탐욕 ({cnn}) [+0/20]")
+
+    return min(int(round(s / maxs * 100)), 100)
+
+
+def _apply_structure_bonus(score, struct, details):
+    """🆕 구조 보너스 — '충분히 빠졌다'를 넘어 '빠짐이 끝나간다'를 점수화."""
+    dd = struct["drawdown"]
+    if struct["is_grind"] and dd <= -10:
+        score += 8
+        details.append("🟢 [구조] Grinding Bear 성숙 보정 — VIX가 못 잡는 완만한 하락의 누적 낙폭 반영 [+8점]")
+    if struct["bullish_div"]:
+        score += 10
+        details.append("🟢 [구조] RSI 상승 다이버전스 — 가격 신저점에도 매도 에너지 소진 중 [+10점]")
+    if struct["higher_low"] and dd <= -8:
+        score += 5
+        details.append("🟢 [구조] 저점 높이기(Higher Low) 확인 — 바닥 다지기 진행 [+5점]")
+    if struct["ma20_reclaim"] and dd <= -10:
+        score += 5
+        details.append("🟢 [구조] 20일선 탈환 — 단기 수급 회복 [+5점]")
+    return min(int(score), 100)
+
+
+def _apply_falling_knife(score, close, details):
+    """떨어지는 칼날 안전장치 (실시간·백테스트 공용 임계값)."""
+    is_knife = False
+    if len(close) >= 5:
+        ret_1d  = (float(close.iloc[-1]) / float(close.iloc[-2]) - 1) * 100
+        ma5     = float(close.rolling(5).mean().iloc[-1])
+        gap_ma5 = (float(close.iloc[-1]) - ma5) / ma5 * 100
+        if ret_1d <= KNIFE_1D_RET or gap_ma5 <= KNIFE_MA5_GAP:
+            is_knife = True
+            if score >= 35:
+                details.append(f"🚨 [Safety Catch] 당일 급락({ret_1d:.1f}%) 또는 5일선 심각한 이탈({gap_ma5:.1f}%). "
+                               f"브레이크(양봉) 확인 후 진입 권장. (-{KNIFE_PENALTY}점 차감)")
+                score = max(score - KNIFE_PENALTY, 0)
+    return score, is_knife
+
+
+def _verdict_from_score(score, drawdown, is_knife):
+    if drawdown > -5: verdict = "📈 고점권 — 바닥 탐지 불가"
+    elif score >= 70: verdict = "🔥 강력 매수 신호 (역사적 바닥 근접)"
+    elif score >= 50: verdict = "🟢 분할 매수 구간 (역발상 타점)"
+    elif score >= 35: verdict = "🟡 조정 진행 중 (추가 하락 여지)"
+    else: verdict = "⚪ 바닥 조건 미충족"
+    if is_knife and score >= 35:
+        verdict = "⚠️ 떨어지는 칼날 (관망 권장)"
+    return verdict
+
+
 def calculate_us_bottom_finder(spy_hist, vix_hist, cnn_score):
-    score = 0
-    details = []
-
     if spy_hist is None or spy_hist.empty:
         return 0, "데이터 부족", [], "알 수 없음"
 
     spy_close = spy_hist['Close']
-    curr_spy  = float(spy_close.iloc[-1])
-    high_252  = float(spy_close.rolling(252, min_periods=1).max().iloc[-1])
-    drawdown  = ((curr_spy / high_252) - 1) * 100
+    struct = analyze_market_structure(spy_close)
+    drawdown = struct["drawdown"]
+    market_phase = struct["regime"]
 
-    if drawdown > -5: market_phase = f"📈 고점권 (Drawdown {drawdown:.1f}%)"
-    elif drawdown > -12: market_phase = f"📉 단기 조정 (Drawdown {drawdown:.1f}%)"
-    elif drawdown > -20: market_phase = f"🟠 깊은 조정 (Drawdown {drawdown:.1f}%)"
-    else: market_phase = f"🔴 약세장/폭락 진행 (Drawdown {drawdown:.1f}%)"
-
-    if drawdown <= -25: score += 35; details.append(f"🟢 대세 하락장 낙폭 ({drawdown:.1f}%) [+35점]")
-    elif drawdown <= -15: score += 22; details.append(f"🟢 깊은 조정 ({drawdown:.1f}%) [+22점]")
-    elif drawdown <= -8: score += 10; details.append(f"🟡 단기 조정 ({drawdown:.1f}%) [+10점]")
-    else: details.append(f"⚪ 고점 근처 ({drawdown:.1f}%) [+0점]")
-
-    spy_rsi = calc_rsi(spy_close, 14)
-    if spy_rsi:
-        if spy_rsi <= 30: score += 20; details.append(f"🟢 SPY RSI 극단 과매도 ({spy_rsi:.1f}) [+20점]")
-        elif spy_rsi <= 38: score += 12; details.append(f"🟢 SPY RSI 과매도 ({spy_rsi:.1f}) [+12점]")
-        elif spy_rsi <= 45: score += 5;  details.append(f"🟡 SPY RSI 과매도 진입 ({spy_rsi:.1f}) [+5점]")
-        else: details.append(f"⚪ SPY RSI 정상 ({spy_rsi:.1f}) [+0점]")
-
+    spy_rsi  = calc_rsi(spy_close, 14)
     curr_vix = float(vix_hist['Close'].iloc[-1]) if not vix_hist.empty else None
-    if curr_vix:
-        if curr_vix >= 40: score += 25; details.append(f"🟢 VIX 극단 패닉 ({curr_vix:.1f}) [+25점]")
-        elif curr_vix >= 32: score += 20; details.append(f"🟢 VIX 패닉 투매 ({curr_vix:.1f}) [+20점]")
-        elif curr_vix >= 26: score += 12; details.append(f"🟡 VIX 공포 확산 ({curr_vix:.1f}) [+12점]")
-        elif curr_vix >= 22: score += 5;  details.append(f"🟡 VIX 상승 주의 ({curr_vix:.1f}) [+5점]")
-        else: details.append(f"⚪ VIX 평온 ({curr_vix:.1f}) [+0점]")
 
-    if cnn_score is not None:
-        if cnn_score <= 15: score += 20; details.append(f"🟢 F&G 역사적 패닉 ({cnn_score}) [+20점]")
-        elif cnn_score <= 25: score += 15; details.append(f"🟢 F&G 극단 공포 ({cnn_score}) [+15점]")
-        elif cnn_score <= 35: score += 8;  details.append(f"🟡 F&G 공포 구간 ({cnn_score}) [+8점]")
-        elif cnn_score <= 45: score += 3;  details.append(f"⚪ F&G 약한 공포 ({cnn_score}) [+3점]")
-        else: details.append(f"⚪ F&G 중립~탐욕 ({cnn_score}) [+0점]")
-
-    score = min(int(score), 100)
-
-    is_falling_knife = False
-    if len(spy_close) >= 5:
-        spy_1d_ret = (float(spy_close.iloc[-1]) / float(spy_close.iloc[-2]) - 1) * 100
-        ma5 = float(spy_close.rolling(5).mean().iloc[-1])
-        gap_ma5 = (curr_spy - ma5) / ma5 * 100
-        
-        if spy_1d_ret <= -2.5 or gap_ma5 <= -4.0:
-            is_falling_knife = True
-            if score >= 35:
-                details.append(f"🚨 [Safety Catch] 당일 급락({spy_1d_ret:.1f}%) 또는 5일선 심각한 이탈({gap_ma5:.1f}%). 브레이크(양봉) 확인 후 진입 권장. (-20점 차감)")
-                score = max(score - 20, 0)
-
-    if drawdown > -5: verdict = "📈 고점권 — 바닥 탐지 불가"
-    elif score >= 70: verdict = "🔥 강력 매수 신호 (역사적 바닥 근접)"
-    elif score >= 50: verdict = "🟢 분할 매수 구간 (역발상 타점)"
-    elif score >= 35: verdict = "🟡 조정 진행 중 (추가 하락 여지)"
-    else: verdict = "⚪ 바닥 조건 미충족"
-
-    if is_falling_knife and score >= 35:
-        verdict = "⚠️ 떨어지는 칼날 (관망 권장)"
+    details = []
+    score = _score_bottom(drawdown, spy_rsi, curr_vix, cnn_score, details=details)
+    score = _apply_structure_bonus(score, struct, details)
+    score, is_knife = _apply_falling_knife(score, spy_close, details)
+    verdict = _verdict_from_score(score, drawdown, is_knife)
 
     return score, verdict, details, market_phase
 
-def calculate_kr_bottom_finder(kospi_hist, vkospi_hist, usdkrw_hist):
-    score = 0
-    details = []
-    max_possible_score = 100
 
+def calculate_kr_bottom_finder(kospi_hist, vkospi_hist, usdkrw_hist):
     if kospi_hist is None or kospi_hist.empty:
         return 0, "데이터 부족", [], "알 수 없음"
 
     kospi_close = kospi_hist['Close']
-    curr_kospi  = float(kospi_close.iloc[-1])
-    high_252  = float(kospi_close.rolling(252, min_periods=1).max().iloc[-1])
-    drawdown  = ((curr_kospi / high_252) - 1) * 100
+    struct = analyze_market_structure(kospi_close)
+    drawdown = struct["drawdown"]
+    market_phase = struct["regime"]
 
-    if drawdown > -5: market_phase = f"📈 고점권 (Drawdown {drawdown:.1f}%)"
-    elif drawdown > -12: market_phase = f"📉 단기 조정 (Drawdown {drawdown:.1f}%)"
-    elif drawdown > -20: market_phase = f"🟠 깊은 조정 (Drawdown {drawdown:.1f}%)"
-    else: market_phase = f"🔴 약세장/폭락 진행 (Drawdown {drawdown:.1f}%)"
+    score, max_score, details = 0, 0, []
+    kill_switch = False
 
-    if drawdown <= -20: score += 35; details.append(f"🟢 KOSPI 대세 하락장 ({drawdown:.1f}%) [+35점]")
-    elif drawdown <= -12: score += 22; details.append(f"🟢 KOSPI 깊은 조정 ({drawdown:.1f}%) [+22점]")
-    elif drawdown <= -7: score += 10; details.append(f"🟡 KOSPI 단기 조정 ({drawdown:.1f}%) [+10점]")
-    else: details.append(f"⚪ 고점 근처 ({drawdown:.1f}%) [+0점]")
+    # ① Drawdown (만점 35)
+    max_score += 35
+    if drawdown <= -20: score += 35; details.append(f"🟢 KOSPI 대세 하락장 ({drawdown:.1f}%) [+35/35]")
+    elif drawdown <= -12: score += 22; details.append(f"🟢 KOSPI 깊은 조정 ({drawdown:.1f}%) [+22/35]")
+    elif drawdown <= -7: score += 10; details.append(f"🟡 KOSPI 단기 조정 ({drawdown:.1f}%) [+10/35]")
+    else: details.append(f"⚪ 고점 근처 ({drawdown:.1f}%) [+0/35]")
 
+    # ② RSI (만점 20)
     kr_rsi = calc_rsi(kospi_close, 14)
-    if kr_rsi:
-        if kr_rsi <= 30: score += 20; details.append(f"🟢 KOSPI 극단 과매도 ({kr_rsi:.1f}) [+20점]")
-        elif kr_rsi <= 40: score += 12; details.append(f"🟢 KOSPI 과매도 ({kr_rsi:.1f}) [+12점]")
-        elif kr_rsi <= 45: score += 5;  details.append(f"🟡 KOSPI 과매도 진입 ({kr_rsi:.1f}) [+5점]")
-        else: details.append(f"⚪ KOSPI RSI 정상 ({kr_rsi:.1f}) [+0점]")
+    if kr_rsi is not None:
+        max_score += 20
+        if kr_rsi <= 30: score += 20; details.append(f"🟢 KOSPI 극단 과매도 ({kr_rsi:.1f}) [+20/20]")
+        elif kr_rsi <= 40: score += 12; details.append(f"🟢 KOSPI 과매도 ({kr_rsi:.1f}) [+12/20]")
+        elif kr_rsi <= 45: score += 5;  details.append(f"🟡 KOSPI 과매도 진입 ({kr_rsi:.1f}) [+5/20]")
+        else: details.append(f"⚪ KOSPI RSI 정상 ({kr_rsi:.1f}) [+0/20]")
 
+    # ③ VKOSPI (만점 25) — 누락 시 만점에서 자동 제외 (하드코딩 환산 제거)
     curr_vkospi = float(vkospi_hist['Close'].iloc[-1]) if not vkospi_hist.empty else None
-    has_vkospi = False
     if curr_vkospi and not np.isnan(curr_vkospi):
-        has_vkospi = True
-        if curr_vkospi >= 25: score += 25; details.append(f"🟢 VKOSPI 패닉 투매 ({curr_vkospi:.1f}) [+25점]")
-        elif curr_vkospi >= 20: score += 15; details.append(f"🟢 VKOSPI 공포 확산 ({curr_vkospi:.1f}) [+15점]")
-        elif curr_vkospi >= 16: score += 5;  details.append(f"🟡 VKOSPI 상승 주의 ({curr_vkospi:.1f}) [+5점]")
-        else: details.append(f"⚪ VKOSPI 평온 ({curr_vkospi:.1f}) [+0점]")
+        max_score += 25
+        if curr_vkospi >= 25: score += 25; details.append(f"🟢 VKOSPI 패닉 투매 ({curr_vkospi:.1f}) [+25/25]")
+        elif curr_vkospi >= 20: score += 15; details.append(f"🟢 VKOSPI 공포 확산 ({curr_vkospi:.1f}) [+15/25]")
+        elif curr_vkospi >= 16: score += 5;  details.append(f"🟡 VKOSPI 상승 주의 ({curr_vkospi:.1f}) [+5/25]")
+        else: details.append(f"⚪ VKOSPI 평온 ({curr_vkospi:.1f}) [+0/25]")
     else:
-        max_possible_score -= 25
-        details.append("⚪ VKOSPI 데이터 누락 (최종 점수에서 보정) [+0점]")
+        details.append("⚪ VKOSPI 데이터 누락 — 만점에서 제외해 자동 보정 [+0점]")
 
+    # ④ 환율 (만점 20) + 킬 스위치
     if not usdkrw_hist.empty:
-        krw_close = usdkrw_hist['Close']
-        krw_rsi = calc_rsi(krw_close, 14)
-        if krw_rsi:
-            if krw_rsi <= 55: score += 20; details.append(f"🟢 환율 안정 및 원화 강세 ({krw_rsi:.1f}) [+20점]")
-            elif krw_rsi <= 65: score += 10; details.append(f"🟡 환율 약세 구간 ({krw_rsi:.1f}) [+10점]")
-            else: 
-                details.append(f"🚨 환율 단기 폭등 위험 ({krw_rsi:.1f}) [+0점]")
+        krw_rsi = calc_rsi(usdkrw_hist['Close'], 14)
+        if krw_rsi is not None:
+            max_score += 20
+            if krw_rsi <= 55: score += 20; details.append(f"🟢 환율 안정 및 원화 강세 (RSI {krw_rsi:.1f}) [+20/20]")
+            elif krw_rsi <= 65: score += 10; details.append(f"🟡 환율 약세 구간 (RSI {krw_rsi:.1f}) [+10/20]")
+            else:
+                details.append(f"🚨 환율 단기 폭등 위험 (RSI {krw_rsi:.1f}) [+0/20]")
                 if krw_rsi > 70 and drawdown > -10:
-                    score = min(score, 30)
-                    details.append("💣 [Kill Switch] 코스피 낙폭 적은데 환율 초급등. 폭락 초입 가능성으로 30점 제한.")
+                    kill_switch = True
+                    details.append("💣 [Kill Switch] 코스피 낙폭 적은데 환율 초급등. 폭락 초입 가능성으로 최종 점수 30점 제한.")
 
-    if not has_vkospi:
-        score = int(score * (100.0 / 75.0))
-        details.append("🔄 (VKOSPI 누락으로 남은 점수를 100점 만점 기준으로 환산 완료)")
-
-    score = min(int(score), 100)
-
-    is_falling_knife = False
-    if len(kospi_close) >= 5:
-        k_1d_ret = (float(kospi_close.iloc[-1]) / float(kospi_close.iloc[-2]) - 1) * 100
-        ma5 = float(kospi_close.rolling(5).mean().iloc[-1])
-        gap_ma5 = (curr_kospi - ma5) / ma5 * 100
-        
-        if k_1d_ret <= -2.5 or gap_ma5 <= -4.0:
-            is_falling_knife = True
-            if score >= 35:
-                details.append(f"🚨 [Safety Catch] 당일 급락({k_1d_ret:.1f}%) 또는 5일선 심각한 이탈({gap_ma5:.1f}%). 브레이크(양봉) 확인 후 진입 권장. (-20점 차감)")
-                score = max(score - 20, 0)
-
-    if drawdown > -5: verdict = "📈 고점권 — 바닥 탐지 불가"
-    elif score >= 70: verdict = "🔥 강력 매수 신호 (역사적 바닥 근접)"
-    elif score >= 50: verdict = "🟢 분할 매수 구간 (역발상 타점)"
-    elif score >= 35: verdict = "🟡 조정 진행 중 (추가 하락 여지)"
-    else: verdict = "⚪ 바닥 조건 미충족"
-
-    if is_falling_knife and score >= 35:
-        verdict = "⚠️ 떨어지는 칼날 (관망 권장)"
+    # 만점 정규화 → 구조 보너스 → 킬 스위치 → 떨어지는 칼날
+    score = min(int(round(score / max_score * 100)), 100) if max_score > 0 else 0
+    score = _apply_structure_bonus(score, struct, details)
+    if kill_switch:
+        score = min(score, 30)
+    score, is_knife = _apply_falling_knife(score, kospi_close, details)
+    verdict = _verdict_from_score(score, drawdown, is_knife)
 
     return score, verdict, details, market_phase
 
+
+# ═════════════════════════════════════════
+# 레이어 3: 회복 확인
+# ═════════════════════════════════════════
 def calculate_recovery_confirmation(rsp_hist, spy_hist, hyg_hist, ief_hist):
     signals = []
     recovery_score = 0
@@ -394,27 +521,24 @@ def calculate_recovery_confirmation(rsp_hist, spy_hist, hyg_hist, ief_hist):
             else:
                 pct_below = (ma50_r - curr_r) / ma50_r * 100
                 signals.append(("🔴", f"Breadth 미회복 — 동일가중(RSP)이 MA50 -{pct_below:.1f}% 하회. 대형주만 오르는 편중 장세."))
-        except:
+        except Exception:
             signals.append(("⚪", "Breadth 데이터 산출 불가."))
 
-    if not hyg_hist.empty and not ief_hist.empty:
-        try:
-            df_c = pd.concat([hyg_hist['Close'], ief_hist['Close']], axis=1).ffill().dropna()
-            df_c.columns = ['HYG', 'IEF']
-            df_c['R'] = df_c['HYG'] / df_c['IEF']
-            curr  = float(df_c['R'].iloc[-1])
-            ma20  = float(df_c['R'].rolling(20).mean().iloc[-1])
-            ma50  = float(df_c['R'].rolling(50).mean().iloc[-1])
-            if curr > ma20 > ma50:
-                signals.append(("🟢", "신용시장 회복 확인 — HYG/IEF 정배열. 기관이 위험자산으로 복귀 중."))
-                recovery_score += 50
-            elif curr > ma50:
-                signals.append(("🟡", "신용시장 부분 회복 — MA50 위. 아직 완전 정배열은 아님."))
-                recovery_score += 25
-            else:
-                signals.append(("🔴", "신용시장 미회복 — 아직 기관 자금 복귀 확인 안 됨."))
-        except:
-            signals.append(("⚪", "Credit 데이터 산출 불가."))
+    ratio = credit_spread_ratio(hyg_hist, ief_hist)
+    if ratio is not None:
+        curr = float(ratio.iloc[-1])
+        ma20 = float(ratio.rolling(20).mean().iloc[-1])
+        ma50 = float(ratio.rolling(50).mean().iloc[-1])
+        if curr > ma20 > ma50:
+            signals.append(("🟢", "신용시장 회복 확인 — HYG/IEF 정배열. 기관이 위험자산으로 복귀 중."))
+            recovery_score += 50
+        elif curr > ma50:
+            signals.append(("🟡", "신용시장 부분 회복 — MA50 위. 아직 완전 정배열은 아님."))
+            recovery_score += 25
+        else:
+            signals.append(("🔴", "신용시장 미회복 — 아직 기관 자금 복귀 확인 안 됨."))
+    else:
+        signals.append(("⚪", "Credit 데이터 산출 불가."))
 
     if recovery_score >= 100: verdict = "🟢 반등 신뢰도 높음 — Breadth + Credit 동시 회복"
     elif recovery_score >= 50: verdict = "🟡 반등 신뢰도 보통 — 일부만 회복"
@@ -422,6 +546,10 @@ def calculate_recovery_confirmation(rsp_hist, spy_hist, hyg_hist, ief_hist):
 
     return verdict, signals, recovery_score
 
+
+# ═════════════════════════════════════════
+# 백테스트 — 실시간과 '동일한 스코어러 + 동일한 구조 보너스 + 동일한 칼날 패널티' 사용
+# ═════════════════════════════════════════
 def run_historical_backtest(spy_hist, vix_hist, vix3m_hist):
     if any(df.empty for df in [spy_hist, vix_hist, vix3m_hist]):
         return None
@@ -430,39 +558,54 @@ def run_historical_backtest(spy_hist, vix_hist, vix3m_hist):
         spy_hist['Close'], vix_hist['Close'], vix3m_hist['Close'],
     ], axis=1).ffill().dropna()
 
-    if df.empty or len(df) < 252:
+    if df.empty or len(df) < 400:
         return None
 
     df.columns = ['SPY', 'VIX', 'VIX3M']
-    df['SPY_High_252'] = df['SPY'].rolling(252, min_periods=1).max()
+
+    # 고점 기준선: min_periods=252 → 데이터 초기 1년은 '가짜 저낙폭' 왜곡이 생기므로 제외
+    df['SPY_High_252'] = df['SPY'].rolling(252, min_periods=252).max()
     df['Drawdown']     = (df['SPY'] / df['SPY_High_252'] - 1) * 100
-    df['RSI']          = get_rolling_rsi(df['SPY'], 14).fillna(50)
-    df['Fwd_3M_Ret']   = (df['SPY'].shift(-63)  / df['SPY'] - 1) * 100
-    df['Fwd_6M_Ret']   = (df['SPY'].shift(-126) / df['SPY'] - 1) * 100
+    df['RSI']          = get_rolling_rsi(df['SPY'], 14)
+    df = df.dropna(subset=['Drawdown', 'RSI'])
+    if df.empty:
+        return None
 
-    scores = []
-    for _, row in df.iterrows():
-        s = 0
-        dd = row['Drawdown']
-        rsi = row['RSI']
-        vix = row['VIX']
+    df['Fwd_3M_Ret'] = (df['SPY'].shift(-63)  / df['SPY'] - 1) * 100
+    df['Fwd_6M_Ret'] = (df['SPY'].shift(-126) / df['SPY'] - 1) * 100
 
-        if dd <= -25:   s += 35
-        elif dd <= -15: s += 22
-        elif dd <= -8:  s += 10
+    # ① 코어 점수 — 실시간과 같은 _score_bottom (CNN은 과거 데이터 없어 제외, 만점 정규화로 스케일 동일)
+    df['Score'] = [
+        _score_bottom(dd, rsi, vix)
+        for dd, rsi, vix in zip(df['Drawdown'], df['RSI'], df['VIX'])
+    ]
 
-        if rsi <= 30:   s += 20
-        elif rsi <= 38: s += 12
-        elif rsi <= 45: s += 5
+    # ② 구조 보너스 — 실시간의 _apply_structure_bonus를 벡터화한 동일 조건
+    close = df['SPY']
+    rets  = close.pct_change()
+    ma20  = close.rolling(20).mean()
+    ma50  = close.rolling(50).mean()
+    ma50_slope = (ma50 / ma50.shift(21) - 1) * 100
+    down_ratio = (rets < 0).rolling(20).mean()
+    p1 = close.shift(30).rolling(30).min()
+    p2 = close.rolling(30).min()
+    r1 = df['RSI'].shift(30).rolling(30).min()
+    r2 = df['RSI'].rolling(30).min()
 
-        if vix >= 40:   s += 25
-        elif vix >= 32: s += 20
-        elif vix >= 26: s += 12
-        elif vix >= 22: s += 5
+    bonus = np.zeros(len(df))
+    bonus += np.where((df['Drawdown'] <= -10) & (down_ratio >= GRIND_DOWN_RATIO) & (ma50_slope < 0), 8, 0)
+    bonus += np.where((p2 < p1) & (r2 > r1 + DIV_RSI_MARGIN), 10, 0)
+    bonus += np.where((p2 > p1 * 1.005) & (df['Drawdown'] <= -8), 5, 0)
+    bonus += np.where((close > ma20) & (df['Drawdown'] <= -10), 5, 0)
+    df['Score'] = np.minimum(df['Score'] + bonus, 100).astype(int)
 
-        scores.append(min(int((s / 80.0) * 100), 100))
-
-    df['Score'] = scores
+    # ③ 떨어지는 칼날 패널티 — 실시간과 동일 임계값
+    ret_1d  = rets * 100
+    ma5     = close.rolling(5).mean()
+    gap_ma5 = (close / ma5 - 1) * 100
+    knife   = (ret_1d <= KNIFE_1D_RET) | (gap_ma5 <= KNIFE_MA5_GAP)
+    df['Score'] = np.where(knife & (df['Score'] >= 35), df['Score'] - KNIFE_PENALTY, df['Score'])
+    df['Score'] = df['Score'].clip(0, 100).astype(int)
 
     res_70 = df[df['Score'] >= 70].dropna(subset=['Fwd_3M_Ret'])
     res_50 = df[(df['Score'] >= 50) & (df['Score'] < 70)].dropna(subset=['Fwd_3M_Ret'])
@@ -491,7 +634,7 @@ def run_historical_backtest(spy_hist, vix_hist, vix3m_hist):
                 event_scores[name] = int(df.loc[closest, 'Score'])
             else:
                 event_scores[name] = "데이터 외 구간"
-        except:
+        except Exception:
             event_scores[name] = None
 
     return {
@@ -501,32 +644,37 @@ def run_historical_backtest(spy_hist, vix_hist, vix3m_hist):
         "score_series":             df[['Score', 'Drawdown']],
     }
 
+
+# ═════════════════════════════════════════
+# 종목 해석 / 라벨링 유틸
+# ═════════════════════════════════════════
 def get_cashflow_interpretation(d):
     gm = d.get('Gross_Margin')
     roic = d.get('ROIC')
     fcf_y = d.get('FCF_Yield')
     buybacks = d.get('Buybacks')
-    
+
     texts = []
     if gm is not None:
         if gm >= 0.50: texts.append(f"✅ 압도적 마진율로 독점적 지위 증명 (매출총이익률 {gm*100:.1f}%)")
         elif gm <= 0.20: texts.append(f"⚠️ 원가 부담이 큰 박리다매 구조 (매출총이익률 {gm*100:.1f}%)")
-            
+
     if roic is not None:
         if roic >= 0.10: texts.append(f"✅ 훌륭한 자본 배치로 돈이 돈을 버는 구조 (ROIC {roic*100:.1f}%)")
         elif roic < 0.05 and roic > 0: texts.append(f"⚠️ 투하자본 대비 실제 수익성은 다소 낮음 (ROIC {roic*100:.1f}%)")
         elif roic < 0: texts.append("🚨 투하자본 대비 적자 발생")
-            
+
     if fcf_y is not None:
         if fcf_y >= 0.05: texts.append(f"✅ 현금 창출력 대비 주가가 싼 매력적인 구간 (FCF Yield {fcf_y*100:.1f}%)")
-        elif fcf_y <= 0.02 and fcf_y > 0: texts.append(f"💡 현금 대비 주가에 프리미엄(기대감)이 반영된 성장주")
+        elif fcf_y <= 0.02 and fcf_y > 0: texts.append("💡 현금 대비 주가에 프리미엄(기대감)이 반영된 성장주")
         elif fcf_y < 0: texts.append("🚨 잉여현금흐름 마이너스 (보유 현금 소진 중)")
-            
+
     if buybacks is not None and buybacks != 0:
         texts.append("✅ 자사주 매입을 통한 주가 방어 및 주주환원 적극 진행 중")
-        
+
     if not texts: return "해당 지표의 데이터가 충분하지 않아 해석이 보류되었습니다."
     return " / ".join(texts)
+
 
 def relative_strength_label(my_rsi, spy_rsi):
     if my_rsi is None or spy_rsi is None:
@@ -542,6 +690,7 @@ def relative_strength_label(my_rsi, spy_rsi):
     if gap <= -5:  return f"⚠️ 소외주 (SPY 대비 {gap:.0f})"
     return f"⚖️ 시장 동기화 (차이 {gap:+.0f})"
 
+
 def short_interest_label(short_val):
     if short_val is None: return "N/A"
     s_pct = short_val * 100
@@ -551,16 +700,18 @@ def short_interest_label(short_val):
     else:             tag = "✅ 낮음"
     return f"{s_pct:.1f}% ({tag})"
 
+
 def get_comprehensive_risk_grade(short_val, beta_val):
     if short_val is None or beta_val is None: return "N/A"
     s_pct = short_val * 100
-    is_high_short = s_pct >= 5.0 
-    is_high_beta = beta_val >= 1.2 
-    
+    is_high_short = s_pct >= 5.0
+    is_high_beta = beta_val >= 1.2
+
     if not is_high_short and not is_high_beta: return "🟢 안정형 — 방어적 투자에 적합"
     elif not is_high_short and is_high_beta: return "🟡 모멘텀형 — 상승장에 강하지만 하락 시 크게 빠짐"
     elif is_high_short and not is_high_beta: return "🟠 논란형 — 시장은 의심하지만 변동성은 낮음, 이유 확인 필요"
     else: return "🔴 고위험 — 하락 베팅 + 큰 변동성, 진입 신중"
+
 
 TITLE_MAP = {
     "ceo": "CEO (최고경영자)", "chief executive": "CEO (최고경영자)",
@@ -578,6 +729,7 @@ TITLE_MAP = {
     "10%": "10% 이상 주요주주", "beneficial": "수익적 소유자",
 }
 
+
 def normalize_title(raw_title: str) -> str:
     if not raw_title: return "직함 미상"
     lower = raw_title.lower().strip()
@@ -585,10 +737,12 @@ def normalize_title(raw_title: str) -> str:
         if key in lower: return label
     return raw_title.strip()
 
+
 def get_edgar_link(ticker: str) -> str:
     return (f"https://www.sec.gov/cgi-bin/browse-edgar"
             f"?action=getcompany&company={ticker}&type=4"
             f"&dateb=&owner=include&count=10&search_text=")
+
 
 def parse_insider(tk, ticker_str: str):
     edgar_url = get_edgar_link(ticker_str)
@@ -604,16 +758,16 @@ def parse_insider(tk, ticker_str: str):
             row_str  = str(row_dict)
 
             is_buy = ("buy" in row_str.lower() or "purchase" in row_str.lower())
-            is_sell_or_exercise = ("sale" in row_str.lower() or "sell" in row_str.lower() or 
+            is_sell_or_exercise = ("sale" in row_str.lower() or "sell" in row_str.lower() or
                                    "exercise" in row_str.lower() or "tax" in row_str.lower())
 
             if is_buy and not is_sell_or_exercise:
-                name = (row_dict.get('insider') or row_dict.get('name') or 
+                name = (row_dict.get('insider') or row_dict.get('name') or
                         row_dict.get('filer') or "이름 미상")
-                raw_title = (row_dict.get('title') or row_dict.get('relationship') or 
+                raw_title = (row_dict.get('title') or row_dict.get('relationship') or
                              row_dict.get('position') or row_dict.get('role') or "")
                 title = normalize_title(str(raw_title))
-                shares = (row_dict.get('shares') or row_dict.get('qty') or 
+                shares = (row_dict.get('shares') or row_dict.get('qty') or
                           row_dict.get('quantity') or "미상")
                 value = (row_dict.get('value') or row_dict.get('transaction value') or None)
 
@@ -621,7 +775,7 @@ def parse_insider(tk, ticker_str: str):
                 status = "🟢 매수 기록 있음"
                 value_str = f" / 거래금액 ${value:,.0f}" if value and isinstance(value, (int, float)) else ""
                 detail = (f"[{date_str}] {name} — {title}\n        순수 매수 {shares}주{value_str}")
-                break 
+                break
 
         if status == "내역 없음":
             try:
@@ -629,13 +783,14 @@ def parse_insider(tk, ticker_str: str):
                 row_dict = {k.lower(): v for k, v in first.to_dict().items()}
                 trans_type = (row_dict.get('transaction') or row_dict.get('text') or "거래 기록 있음 (매수 아님)")
                 status = f"⚪ {str(trans_type)[:30]}"
-            except:
+            except Exception:
                 status = "내역 없음"
 
     except Exception as e:
         status = f"조회 불가 ({str(e)[:30]})"
 
     return status, detail, edgar_url
+
 
 def get_ai_signal(d):
     rsi  = d.get('RSI_14')
@@ -665,6 +820,7 @@ def get_ai_signal(d):
     if rsi_f < 45: return "🔥 바닥 줍줍 (적극매수)"
     return "🟡 방향성 탐색 (관망)"
 
+
 def calculate_smart_target(d, ai_sig):
     cp       = d.get('Price')
     ma5      = d.get('MA5', cp)
@@ -676,6 +832,7 @@ def calculate_smart_target(d, ai_sig):
     elif "바닥 줍줍" in ai_sig: return bb_lower, "볼린저 하단"
     elif "과매수"   in ai_sig: return bb_upper,  "볼린저 상단"
     else: return "-", "홀딩(Wait)"
+
 
 def get_tenbagger_signal(d):
     mcap     = float(d.get('MarketCap') or 0)
@@ -690,7 +847,7 @@ def get_tenbagger_signal(d):
 
     if region == "미국" and mcap >= 100_000_000_000:   return "-"
     if region == "한국" and mcap >= 10_000_000_000_000: return "-"
-    
+
     is_rule_40_passed = rule_40 is not None and rule_40 >= 40
 
     if rev_g < 0.20:
@@ -701,19 +858,19 @@ def get_tenbagger_signal(d):
             is_exception = True
         elif is_rule_40_passed:
             is_exception = True
-            
-        if not is_exception:
-            return "-" 
 
-    if gap_high < -35.0: return "-" 
+        if not is_exception:
+            return "-"
+
+    if gap_high < -35.0: return "-"
 
     points = 0
-    if rev_g >= 0.30: points += 1   
-    if earn_g >= 0.30 or is_turnaround: points += 1    
-    if 0 < peg <= 1.5: points += 1  
-    if op_m is not None and float(op_m) >= 0.20: points += 1 
-    if is_rule_40_passed: points += 2 
-    
+    if rev_g >= 0.30: points += 1
+    if earn_g >= 0.30 or is_turnaround: points += 1
+    if 0 < peg <= 1.5: points += 1
+    if op_m is not None and float(op_m) >= 0.20: points += 1
+    if is_rule_40_passed: points += 2
+
     if points >= 3: return "🔥 기관 최선호 대장주 (Rule of 40)" if is_rule_40_passed else "🔥 기관 최선호 대장주"
     if points >= 1: return "🌱 우량 고성장주 (Rule of 40)" if is_rule_40_passed else "🌱 우량 고성장주"
     return "-"

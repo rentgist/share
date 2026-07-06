@@ -36,7 +36,7 @@ def get_krx_mapping():
                 "yf_code": row['Code'] + market_suffix
             }
         return mapping
-    except:
+    except Exception:
         mapping["_ERROR_"] = True
         return mapping
 
@@ -55,7 +55,7 @@ def get_upcoming_events():
     try:
         with open(events_path, "r", encoding="utf-8") as f:
             events = json.load(f)
-    except:
+    except Exception:
         return []
 
     now = get_kst_now().replace(tzinfo=None)
@@ -66,7 +66,7 @@ def get_upcoming_events():
             days_left = (edate - now).days
             if 0 <= days_left <= 60:
                 upcoming.append((e["date"], e["event"], e["impact"], days_left))
-        except:
+        except Exception:
             continue
             
     upcoming.sort(key=lambda x: x[3])
@@ -119,7 +119,7 @@ def get_macro_charts():
                 df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
                 df = df[~df.index.duplicated(keep='last')]
             result[k] = df
-        except: 
+        except Exception:
             result[k] = pd.DataFrame()
     return result
 
@@ -131,7 +131,7 @@ def get_sector_baseline():
         try:
             hist = fetch_ticker_history(ticker, period="3mo")['Close']
             res[name] = calc_rsi(hist, 14)
-        except:
+        except Exception:
             res[name] = None
     return res
 
@@ -142,6 +142,17 @@ def fetch_ticker_history(ticker_str, period="1y"):
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def fetch_fdr_history(raw_code, start):
     return fdr.DataReader(raw_code, start=start)
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def fetch_ticker_info(tk):
+    """
+    yfinance .info 방어 계층: rate limit(429) 시 빈 dict가 조용히 반환되는 것을
+    '오류'로 승격시켜 지수 백오프 재시도를 유발한다. (가장 자주 병목되는 구간)
+    """
+    info = tk.info
+    if not info or not isinstance(info, dict) or len(info) <= 2:
+        raise ValueError("info 응답이 비어 있음 (rate limit 추정)")
+    return info
 
 # ─────────────────────────────────────────
 # 개별 종목 데이터 (yfinance 병목 해결을 위한 retry 적용)
@@ -159,13 +170,18 @@ def get_stock_data(query, is_kr=False, fast_mode=False):
             else:        raw_code, yf_code = query, f"{query}.KS"
             hist = fetch_fdr_history(raw_code, start=start).dropna()
             tk   = yf.Ticker(yf_code)
-            info = tk.info
             ticker_str = raw_code
         else:
             ticker_str = US_NAME_MAP.get(str(query).strip().upper(), query).upper()
             tk         = yf.Ticker(ticker_str)
             hist       = fetch_ticker_history(ticker_str, period="1y").dropna()
-            info       = tk.info
+
+        # .info는 429가 가장 잘 터지는 구간 → 재시도 계층으로 감싸고,
+        # 최종 실패해도 가격/기술 지표는 살리는 Graceful Degradation
+        try:
+            info = fetch_ticker_info(tk)
+        except Exception:
+            info = {}
 
         if hist.empty or len(hist) < 30:
             base["error"] = "데이터 부족"
@@ -219,7 +235,8 @@ def get_stock_data(query, is_kr=False, fast_mode=False):
             "PBR":             info.get('priceToBook'),
             "ROE":             info.get('returnOnEquity'),
             "Op_Margin":       info.get('operatingMargins'),
-            "PEG":             info.get('pegRatio'),
+            # yfinance 최신 버전은 'pegRatio' 대신 'trailingPegRatio'를 반환 → 폴백 처리
+            "PEG":             info.get('trailingPegRatio') or info.get('pegRatio'),
             "Rev_Growth":      info.get('revenueGrowth'),
         })
 
@@ -285,7 +302,7 @@ def get_stock_data(query, is_kr=False, fast_mode=False):
                             if pd.notna(val):
                                 base["Buybacks"] = val
                                 break
-            except:
+            except Exception:
                 pass
 
             if not is_kr:
@@ -306,7 +323,7 @@ def get_stock_data(query, is_kr=False, fast_mode=False):
                         future = earns[earns.index > pd.Timestamp.now(tz='UTC')].sort_index()
                         if not future.empty:
                             base["Next_Earning"] = future.index[0].strftime('%Y-%m-%d')
-                except:
+                except Exception:
                     pass
 
                 short_raw = info.get('shortPercentOfFloat')
@@ -326,7 +343,7 @@ def get_stock_data(query, is_kr=False, fast_mode=False):
                             news_data[0].get('content', {}).get('title')
                             or news_data[0].get('title', 'N/A')
                         )
-                except:
+                except Exception:
                     pass
 
                 status, detail, edgar_url = parse_insider(tk, ticker_str)

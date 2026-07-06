@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import datetime
+import altair as alt
 
 from config import get_kst_now
 from data_loader import (
@@ -25,7 +26,7 @@ from signals import (
     get_tenbagger_signal
 )
 
-st.set_page_config(page_title="11원칙 퀀트 대시보드 v22.0", page_icon="🧭", layout="wide")
+st.set_page_config(page_title="11원칙 퀀트 대시보드 v23.0", page_icon="🧭", layout="wide")
 
 # ─────────────────────────────────────────
 # 포맷 및 색상 맵핑
@@ -84,8 +85,8 @@ def color_df(val):
 # ─────────────────────────────────────────
 # UI — 전역 데이터 선초기화
 # ─────────────────────────────────────────
-st.title("🧭 11원칙 퀀트 트레이딩 대시보드 v22.0")
-st.caption("v22.0: 글로벌 마스터 킬 스위치 (신용스프레드 교차 검증) + 환율 조기경보 탑재")
+st.title("🧭 11원칙 퀀트 트레이딩 대시보드 v23.0")
+st.caption("v23.0: 국면 판별 엔진(Regime Engine) 탑재 — 스텔스 약세장(Grinding Bear)·고변동 횡보(Whipsaw) 감지 + 바닥 다지기(Basing) 구조 점수 + 백테스트·실시간 점수 스케일 통일")
 
 cnn_score, cnn_rating, cnn_history = get_real_cnn_fg()
 sector_base = get_sector_baseline()
@@ -111,8 +112,8 @@ with tab_port:
 
     st.markdown("#### 📝 보유 종목 입력")
     st.info(
-        "**입력 형식:** 종목명:매수가 (쉼표로 구분)\\n\\n"
-        "🇺🇸 미국: `브로드컴:320.5, 버티브:250, TSMC:180`\\n\\n"
+        "**입력 형식:** 종목명:매수가 (쉼표로 구분)\n\n"
+        "🇺🇸 미국: `브로드컴:320.5, 버티브:250, TSMC:180`\n\n"
         "🇰🇷 한국: `LS ELECTRIC:185000, 피에스케이홀딩스:120000`"
     )
 
@@ -146,15 +147,17 @@ with tab_port:
             st.warning("종목을 올바른 형식으로 입력해 주세요.")
         else:
             port_data = []
-            with st.spinner("보유 종목 데이터 수집 중... (재무제표 교차 검증 중)"):
-                for name, buy_price, region in port_items:
-                    d = get_stock_data(name, is_kr=(region == "한국"), fast_mode=False)
-                    d["Region"]    = region
-                    d["BuyPrice"]  = buy_price
-                    if not d.get("error"):
-                        port_data.append(d)
-                    else:
-                        st.warning(f"⚠️ '{name}' 데이터 조회 실패: {d.get('error')}")
+            prog = st.progress(0.0, text="보유 종목 데이터 수집 준비 중...")
+            for i, (name, buy_price, region) in enumerate(port_items):
+                prog.progress((i + 1) / len(port_items), text=f"[{i+1}/{len(port_items)}] '{name}' 재무제표 교차 검증 중...")
+                d = get_stock_data(name, is_kr=(region == "한국"), fast_mode=False)
+                d["Region"]    = region
+                d["BuyPrice"]  = buy_price
+                if not d.get("error"):
+                    port_data.append(d)
+                else:
+                    st.warning(f"⚠️ '{name}' 데이터 조회 실패: {d.get('error')}")
+            prog.empty()
 
             if not port_data:
                 st.error("조회된 종목이 없습니다. 종목명을 확인해 주세요.")
@@ -391,7 +394,7 @@ with tab_port:
                     "   - 현재 손실/수익률과 시장 상황(F&G, SPY RSI)을 종합하여 지금 당장 '적극 매수(물타기)', '관망(타점 대기)', '비중 축소' 해야 할 종목들을 분류하고 구체적인 액션 플랜을 제시해 줘."
                 ]
 
-                st.code("\\n".join(port_lines), language="text")
+                st.code("\n".join(port_lines), language="text")
 
 with tab5:
     st.header("📖 11원칙 퀀트 매매 가이드라인 (오리지널 철학)")
@@ -458,22 +461,26 @@ with tab2:
     col2.metric("미국 VIX / 한국 VKOSPI", f"{current_vix} / {current_vkospi}", f"{vix_change}%", delta_color="inverse")
     col3.metric("S&P 500 (SPY)", f"${current_spy:,.2f}" if current_spy != "N/A" else "N/A", f"{spy_change:+.2f}%" if current_spy != "N/A" else "N/A")
     if cnn_score is not None:
-        if cnn_score <= 25:   fg_color, fg_stat = "🔴", "극단적 공포"
+        # 역발상 관점: 극단적 공포 = 매수 기회(🟢), 극단적 탐욕 = 위험(🚨)
+        if cnn_score <= 25:   fg_color, fg_stat = "🟢", "극단적 공포 (역발상 매수 구간)"
         elif cnn_score <= 45: fg_color, fg_stat = "🟠", "공포"
         elif cnn_score <= 55: fg_color, fg_stat = "🟡", "중립"
-        elif cnn_score <= 75: fg_color, fg_stat = "🟢", "탐욕"
-        else:                 fg_color, fg_stat = "🟢", "극단적 탐욕"
+        elif cnn_score <= 75: fg_color, fg_stat = "🟠", "탐욕 (추격 매수 주의)"
+        else:                 fg_color, fg_stat = "🚨", "극단적 탐욕 (현금 확보 경계)"
         col4.metric("CNN Fear & Greed", f"{cnn_score} / 100", f"{fg_color} {fg_stat}")
     else:
         col4.metric("CNN Fear & Greed", "N/A", cnn_rating)
 
     st.divider()
-    st.markdown("#### 🧭 시장 진단 시스템 v22.0 — 글로벌 통합 매크로 구조")
+    st.markdown("#### 🧭 시장 진단 시스템 v23.0 — 글로벌 통합 매크로 + 국면 판별 엔진")
     st.info(
-        "**📌 글로벌 킬 스위치 시스템:**\\n\\n"
+        "**📌 글로벌 킬 스위치 시스템:**\n\n"
         "**[마스터 레이어] 미국 글로벌 매크로** — 전 세계 자본 시장의 유동성을 대변하는 신용 스프레드와 VIX, SPY 추세를 교차 검증합니다. "
-        "단순 차익 실현이 아닌 '시스템 위기'로 판독되면 킬 스위치가 작동합니다.\\n\\n"
-        "**[종속 레이어] 한국 수급 탐지기** — 글로벌이 평온해도, 한국 시장 내 외국인 자본 이탈(환율 발작, 파생 베팅)을 조기 경보합니다."
+        "단순 차익 실현이 아닌 '시스템 위기'로 판독되면 킬 스위치가 작동합니다.\n\n"
+        "**[종속 레이어] 한국 수급 탐지기** — 글로벌이 평온해도, 한국 시장 내 외국인 자본 이탈(환율 발작, 파생 베팅)을 조기 경보합니다.\n\n"
+        "**🆕 [국면 판별 엔진] 스텔스 위험 감지** — VIX가 뛰지 않는 '미지근한 지속 하락(🐻 Grinding Bear)'은 하락일 비율·50일선 기울기·"
+        "VIX 안일 다이버전스로, '오르며 빠지는 고변동 횡보(🌊 Whipsaw)'는 실현변동성 대비 방향성 부재로 별도 감지합니다. "
+        "바닥 탐지기에는 '빠짐이 끝나간다'를 확인하는 구조 신호(RSI 다이버전스·저점 높이기·20일선 탈환)가 보너스 점수로 반영됩니다."
     )
 
     # ── 레이어 1: 위험 탐지기 (미국 마스터 / 한국 보조) ──
@@ -525,7 +532,7 @@ with tab2:
             f"<p style='margin-top:15px; font-size:18px; font-weight:bold; color:#555;'>현재 국면: {us_phase}</p>"
             f"</div>", unsafe_allow_html=True
         )
-        with st.expander("🔍 미국장 연산 근거 (Drawdown + RSI + VIX + CNN)"):
+        with st.expander("🔍 미국장 연산 근거 (Drawdown + RSI + VIX + CNN + 구조 보너스)"):
             for detail in us_details: st.markdown(f"- {detail}")
 
     with b_col2:
@@ -537,7 +544,7 @@ with tab2:
             f"<p style='margin-top:15px; font-size:18px; font-weight:bold; color:#555;'>현재 국면: {kr_phase}</p>"
             f"</div>", unsafe_allow_html=True
         )
-        with st.expander("🔍 한국장 연산 근거 (Drawdown + RSI + VKOSPI + 환율)"):
+        with st.expander("🔍 한국장 연산 근거 (Drawdown + RSI + VKOSPI + 환율 + 구조 보너스)"):
             for detail in kr_details: st.markdown(f"- {detail}")
 
     st.divider()
@@ -557,8 +564,9 @@ with tab2:
     # ── 백테스트 (10년 데이터 기반 완화 컷) ──
     with st.expander("🔬 과거 10년 백테스트 (미국 바닥 탐지기 기준)"):
         st.markdown(
-            "바닥 탐지기 점수(Drawdown + RSI + VIX)를 과거 10년에 매일 적용한 결과입니다. "
-            "**주요 이벤트에서 얼마나 점수가 나왔는지 확인**해보세요 — 모델 신뢰도 검증에 핵심입니다."
+            "실시간 바닥 탐지기와 **완전히 동일한 스코어러**(Drawdown + RSI + VIX + 구조 보너스 + 칼날 패널티)를 "
+            "과거 10년에 매일 적용한 결과입니다. **주요 이벤트에서 얼마나 점수가 나왔는지 확인**해보세요 — 모델 신뢰도 검증에 핵심입니다. "
+            "(CNN F&G는 과거 데이터가 없어 제외되지만, 만점 대비 %로 정규화하므로 실시간 점수와 같은 자로 비교 가능합니다.)"
         )
         bt = run_historical_backtest(spy_10y, vix_10y, vix3m_10y)
 
@@ -601,13 +609,29 @@ with tab2:
                 bt_col2.info("해당 구간 시그널 발생 없음")
 
             if "score_series" in bt and not bt["score_series"].empty:
-                st.markdown("**📈 바닥 탐지 점수 시계열 (10년)**")
-                score_df = bt["score_series"].copy()
-                score_df.columns = ["바닥 탐지 점수", "Drawdown(%)"]
-                st.line_chart(score_df[["바닥 탐지 점수"]], height=200, color=["#fcca46"])
-                st.caption("점수가 50~70% 이상으로 치솟는 시점 = 역사적 매수 기회. 2018년, 2020년(코로나), 2022년 바닥을 확인하세요.")
+                st.markdown("**📈 바닥 탐지 점수 vs 지수 낙폭 (10년, 이중축)**")
+                src = bt["score_series"].reset_index()
+                src.columns = ["Date", "Score", "Drawdown"]
 
-            st.caption("※ 백테스트는 과거 통계이며 미래 수익을 보장하지 않습니다. CNN F&G는 과거 데이터 없어 제외.")
+                base = alt.Chart(src).encode(x=alt.X("Date:T", title=None))
+                score_area = base.mark_area(opacity=0.35, color="#fcca46").encode(
+                    y=alt.Y("Score:Q", title="바닥 탐지 점수",
+                            scale=alt.Scale(domain=[0, 100]),
+                            axis=alt.Axis(titleColor="#b8860b"))
+                )
+                dd_line = base.mark_line(color="#ff4b4b", strokeWidth=1.2).encode(
+                    y=alt.Y("Drawdown:Q", title="Drawdown (%)",
+                            axis=alt.Axis(titleColor="#ff4b4b"))
+                )
+                chart = alt.layer(score_area, dd_line).resolve_scale(y="independent").properties(height=280)
+                st.altair_chart(chart, use_container_width=True)
+                st.caption(
+                    "🟨 노란 영역 = 바닥 점수 / 🔴 빨간 선 = 고점 대비 낙폭. "
+                    "점수가 50 이상으로 치솟는 시점 = 역사적 매수 기회 (2018년 말, 2020년 코로나, 2022년 바닥 확인). "
+                    "낙폭이 깊어지는데 점수가 함께 올라가는지가 모델 건전성의 핵심입니다."
+                )
+
+            st.caption("※ 백테스트는 과거 통계이며 미래 수익을 보장하지 않습니다. 고점 산정 왜곡 방지를 위해 데이터 첫 1년은 집계에서 제외됩니다.")
         else:
             st.warning("백테스트에 필요한 10년치 데이터가 부족합니다.")
 
@@ -671,13 +695,23 @@ with tab1:
         [("한국", q.strip()) for q in kr_input.split(",") if q.strip()]
     )
 
+    # 버튼 게이트: 다른 탭 위젯 조작으로 rerun될 때마다 무거운 API 호출이
+    # 자동 발생하는 것을 차단. 한 번 스캔하면 session_state로 유지.
+    if st.button("🔍 스캔 시작 (재무제표 교차 검증 포함)", type="primary", key="scan_btn"):
+        st.session_state["scan_requested"] = True
+
     all_data, failed_queries = [], []
-    with st.spinner("분석 중 (재무제표 교차 검증 포함)..."):
-        for region, q in queries:
+    if st.session_state.get("scan_requested") and queries:
+        prog = st.progress(0.0, text="분석 준비 중...")
+        for i, (region, q) in enumerate(queries):
+            prog.progress((i + 1) / len(queries), text=f"[{i+1}/{len(queries)}] '{q}' 분석 중...")
             d = get_stock_data(q, is_kr=(region == "한국"), fast_mode=False)
             d["Region"] = region
             if not d.get("error"): all_data.append(d)
             else: failed_queries.append(q)
+        prog.empty()
+    elif not st.session_state.get("scan_requested"):
+        st.info("종목을 입력하고 **스캔 시작** 버튼을 누르면 분석이 시작됩니다.")
 
     if failed_queries:
         st.warning(f"⚠️ 데이터 조회 실패 (오타 확인): {', '.join(failed_queries)}")
@@ -803,7 +837,7 @@ with tab1:
                         st.write("최근 순수 매수 기록 없음 (매도·행사·자동매매만 감지됨)")
                     if block["url"]:
                         st.markdown(
-                            f"**[📄 SEC EDGAR Form 4 원문 보기 →]({block['url']})**\\n\\n",
+                            f"**[📄 SEC EDGAR Form 4 원문 보기 →]({block['url']})**\n\n",
                             unsafe_allow_html=True
                         )
 
@@ -827,13 +861,17 @@ with tab4:
     }
     selected_theme = st.selectbox("스캔할 섹터:", list(UNIVERSE.keys()))
     if st.button("해당 섹터 레이더 가동"):
-        with st.spinner(f"[{selected_theme}] 전수 스캔 중 (경량 스캔 모드 활성화)..."):
-            is_korea = "한국" in selected_theme
-            radar_data = []
-            for q in UNIVERSE[selected_theme]:
-                d = get_stock_data(q, is_kr=is_korea, fast_mode=True)
-                d["Region"] = "한국" if is_korea else "미국"
-                if not d.get("error"): radar_data.append(d)
+        is_korea = "한국" in selected_theme
+        radar_data = []
+        tickers = UNIVERSE[selected_theme]
+        prog = st.progress(0.0, text=f"[{selected_theme}] 전수 스캔 준비 중...")
+        for i, q in enumerate(tickers):
+            prog.progress((i + 1) / len(tickers), text=f"[{i+1}/{len(tickers)}] '{q}' 경량 스캔 중...")
+            d = get_stock_data(q, is_kr=is_korea, fast_mode=True)
+            d["Region"] = "한국" if is_korea else "미국"
+            if not d.get("error"): radar_data.append(d)
+        prog.empty()
+        with st.container():
             radar_rows = []
             for d in radar_data:
                 tb_sig = get_tenbagger_signal(d)
@@ -884,18 +922,21 @@ with tab4:
                     "2. 현재 시점에서 장기 투자(1~3년) 목적으로 가장 투자 매력도(Risk vs Return)가 높은 1순위, 2순위 기업을 선정하고 그 이유를 논리적으로 설명해 줘.",
                     "3. 각 기업이 가진 치명적인 리스크나 주의해야 할 변수가 있다면 함께 짚어줘."
                 ]
-                st.code("\\n".join(tb_lines), language="text")
+                st.code("\n".join(tb_lines), language="text")
                 
             else:
                 st.warning("⚠️ 현재 조건(지하실 역추세 및 실적/마진 기준)을 통과한 진성 우량주가 이 섹터에 존재하지 않습니다.")
 
 with tab3:
-    st.subheader("🤖 AI 참모 전용 구조화 리포트 v22.0 (진바닥 판독기 연동)")
+    st.subheader("🤖 AI 참모 전용 구조화 리포트 v23.0 (진바닥 판독기 연동)")
     st.caption("아래 텍스트를 복사하여 ChatGPT, Claude, Gemini 등에 붙여넣고 심층 분석을 받아보세요.")
-    
+
+    if not all_data:
+        st.info("📊 '실시간 포트폴리오' 탭에서 먼저 **스캔 시작**을 실행하면 종목 데이터가 이 리포트에 포함됩니다.")
+
     now = get_kst_now().strftime('%Y-%m-%d %H:%M:%S KST')
     lines = [
-        f"[11원칙 퀀트 분석 리포트 v22.0] ({now})",
+        f"[11원칙 퀀트 분석 리포트 v23.0] ({now})",
         f"- CNN F&G (시장 심리): {cnn_score} ({cnn_rating})",
         f"- SPY RSI(14) (시장 과열도): {fmt(spy_rsi_val, dig=1)}",
         "",
@@ -955,4 +996,4 @@ with tab3:
         "   - RSI 멀티타임프레임과 52주 위치, 시장대비 강도를 종합해 현재 가장 매수 신뢰도가 높은 종목을 선정해 줘.",
         "   - 현재 시장 심리(F&G, SPY RSI)를 바탕으로 지금 당장 '적극 매수', '관망', '비중 축소' 해야 할 종목들을 분류하고 구체적인 액션 플랜을 제시해 줘."
     ]
-    st.code("\\n".join(lines), language="text")
+    st.code("\n".join(lines), language="text")
