@@ -315,6 +315,23 @@ def get_stock_data(query, is_kr=False, fast_mode=False):
         except Exception:
             info = {}
 
+        # yfinance .info Rate Limit (429) 우회용 2차 백업 (Financial Statements 기반 자동 복구)
+        financials_loaded = False
+        inc_fallback, bs_fallback, cf_fallback = None, None, None
+        if not info or len(info) <= 2:
+            try:
+                fast = tk.fast_info
+                if base.get("Price") is None:
+                    base["Price"] = int(fast.last_price) if is_kr else round(fast.last_price, 2)
+                base["MarketCap"] = fast.market_cap
+                # Load financials for backup calculations
+                inc_fallback = tk.financials
+                bs_fallback = tk.balance_sheet
+                cf_fallback = tk.cashflow
+                financials_loaded = True
+            except Exception:
+                pass
+
         if hist.empty or len(hist) < 30:
             base["error"] = "데이터 부족"
             return base
@@ -358,38 +375,121 @@ def get_stock_data(query, is_kr=False, fast_mode=False):
                 is_turnaround = True
         base["Is_Turnaround"] = is_turnaround
 
-        base.update({
-            "MarketCap":       info.get('marketCap', 0),
-            "PER":             info.get('trailingPE'),
-            "Forward_PER":     info.get('forwardPE'),
-            "Forward_EPS":     f_eps,
-            "Earnings_Growth": info.get('earningsGrowth'),
-            "PBR":             info.get('priceToBook'),
-            "ROE":             info.get('returnOnEquity'),
-            "Op_Margin":       info.get('operatingMargins'),
-            # yfinance 최신 버전은 'pegRatio' 대신 'trailingPegRatio'를 반환 → 폴백 처리
-            "PEG":             info.get('trailingPegRatio') or info.get('pegRatio'),
-            "Rev_Growth":      info.get('revenueGrowth'),
-        })
+        def safe_val(df, row):
+            if df is not None and not df.empty and row in df.index:
+                val = df.loc[row].iloc[0]
+                return float(val) if pd.notna(val) else None
+            return None
 
-        base["Gross_Margin"] = info.get('grossMargins')
+        # 기본 값 세팅
+        mcap = info.get('marketCap', 0) or base.get("MarketCap", 0)
+        per_v = info.get('trailingPE')
+        fwd_per = info.get('forwardPE')
+        fwd_eps = info.get('forwardEps')
+        earn_g = info.get('earningsGrowth')
+        pbr_v = info.get('priceToBook')
+        roe_v = info.get('returnOnEquity')
+        op_m = info.get('operatingMargins')
+        peg_v = info.get('trailingPegRatio') or info.get('pegRatio')
+        rev_g = info.get('revenueGrowth')
+        gross_m = info.get('grossMargins')
+
+        # 백업 계산기 가동 (info 누락 시)
+        if not info or len(info) <= 2:
+            if not financials_loaded:
+                try:
+                    inc_fallback = tk.financials
+                    bs_fallback = tk.balance_sheet
+                    cf_fallback = tk.cashflow
+                except Exception:
+                    pass
+            
+            inc, bs, cf = inc_fallback, bs_fallback, cf_fallback
+            if inc is not None and not inc.empty:
+                rev_val = safe_val(inc, 'Total Revenue')
+                gp_val = safe_val(inc, 'Gross Profit')
+                op_inc = safe_val(inc, 'Operating Income')
+                net_inc = safe_val(inc, 'Net Income')
+                
+                if gross_m is None and gp_val and rev_val:
+                    gross_m = gp_val / rev_val
+                if op_m is None and op_inc and rev_val:
+                    op_m = op_inc / rev_val
+                if rev_g is None and 'Total Revenue' in inc.index:
+                    rev_series = inc.loc['Total Revenue']
+                    if len(rev_series) > 1 and rev_series.iloc[1] > 0:
+                        rev_g = (rev_series.iloc[0] - rev_series.iloc[1]) / rev_series.iloc[1]
+                
+                # ROE 백업
+                if roe_v is None and bs is not None and not bs.empty:
+                    equity_val = safe_val(bs, 'Stockholders Equity')
+                    if net_inc and equity_val:
+                        roe_v = net_inc / equity_val
+                
+                # PER 백업
+                if per_v is None and net_inc:
+                    try:
+                        shares_val = tk.fast_info.shares
+                        if shares_val and net_inc > 0 and price:
+                            per_v = price / (net_inc / shares_val)
+                    except Exception:
+                        pass
+
+        base.update({
+            "MarketCap":       mcap,
+            "PER":             per_v,
+            "Forward_PER":     fwd_per,
+            "Forward_EPS":     fwd_eps,
+            "Earnings_Growth": earn_g,
+            "PBR":             pbr_v,
+            "ROE":             roe_v,
+            "Op_Margin":       op_m,
+            "PEG":             peg_v,
+            "Rev_Growth":      rev_g,
+        })
+        base["Gross_Margin"] = gross_m
         
+        # FCF 및 관련 지표 계산 (info 누락 시 백업)
         fcf = info.get('freeCashflow')
-        mcap = info.get('marketCap')
+        if fcf is None and not fast_mode:
+            fcf = safe_val(cf, 'Free Cash Flow')
+            
+        mcap = info.get('marketCap') or base.get("MarketCap")
+        
         shares = info.get('sharesOutstanding')
+        if shares is None and not fast_mode:
+            try:
+                shares = tk.fast_info.shares
+            except Exception:
+                pass
         
         base["FCF_Yield"] = (fcf / mcap) if fcf and mcap else None
         base["FCFPS"] = (fcf / shares) if fcf and shares else None
         
-        rev_g = info.get('revenueGrowth')
-        op_m = info.get('operatingMargins')
+        # Rule of 40 (이미 위에서 세팅 완료한 값 재사용)
         if rev_g is not None and op_m is not None:
             base["Rule_of_40"] = (rev_g + op_m) * 100
         else:
             base["Rule_of_40"] = None
             
-        base["EV_EBITDA"] = info.get('enterpriseToEbitda')
         ev = info.get('enterpriseValue')
+        if ev is None and mcap and not fast_mode:
+            try:
+                total_debt = safe_val(bs, 'Total Debt') or 0
+                cash = safe_val(bs, 'Cash Cash Equivalents And Short Term Investments') or safe_val(bs, 'Cash And Cash Equivalents') or 0
+                ev = mcap + total_debt - cash
+            except Exception:
+                pass
+                
+        base["EV_EBITDA"] = info.get('enterpriseToEbitda')
+        if base["EV_EBITDA"] is None and ev and not fast_mode:
+            try:
+                ebitda = safe_val(inc, 'EBITDA')
+                if ebitda and ebitda > 0:
+                    base["EV_EBITDA"] = ev / ebitda
+            except Exception:
+                pass
+                
         if ev and fcf and fcf > 0:
             base["EV_FCF"] = ev / fcf
         else:
@@ -405,9 +505,9 @@ def get_stock_data(query, is_kr=False, fast_mode=False):
 
         if not fast_mode:
             try:
-                inc = tk.financials
-                bs = tk.balance_sheet
-                cf = tk.cashflow
+                inc = inc_fallback if inc_fallback is not None else tk.financials
+                bs = bs_fallback if bs_fallback is not None else tk.balance_sheet
+                cf = cf_fallback if cf_fallback is not None else tk.cashflow
 
                 if inc is not None and not inc.empty and bs is not None and not bs.empty:
                     op_inc = 0
