@@ -12,6 +12,11 @@ from data_loader import (
     get_stock_data,
     get_upcoming_events
 )
+import sys
+if "signals" in sys.modules:
+    import importlib
+    importlib.reload(sys.modules["signals"])
+
 try:
     from signals import (
         calculate_us_risk_radar,
@@ -743,8 +748,8 @@ with tab2:
             st.line_chart(
                 pd.DataFrame({
                     "VKOSPI Proxy": vkospi_10y['Close'],
-                    "🔴 위험선(30)": 30.0,
-                    "🟢 평온선(15)": 15.0,
+                    "🔴 위험선(25)": 25.0,
+                    "🟢 평온선(16)": 16.0,
                 }),
                 height=280,
                 color=["#1f77b4", "#ff4b4b", "#21c354"]
