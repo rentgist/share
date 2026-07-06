@@ -179,7 +179,7 @@ def build_vkospi_proxy(kospi_df):
     return pd.DataFrame({"Close": rv}).dropna()
 
 
-@st.cache_data(ttl=600)  # 기존 3600초에서 600초로 축소 (실시간성 확보)
+@st.cache_data(ttl=599)  # 캐시 무효화를 위해 ttl 1초 변경 (600 -> 599)
 def get_macro_charts():
     result = {}
     tickers = {
