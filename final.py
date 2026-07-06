@@ -16,6 +16,9 @@ import sys
 if "signals" in sys.modules:
     import importlib
     importlib.reload(sys.modules["signals"])
+if "data_loader" in sys.modules:
+    import importlib
+    importlib.reload(sys.modules["data_loader"])
 
 try:
     from signals import (
