@@ -18,6 +18,7 @@ from signals import (
     calculate_us_bottom_finder,
     calculate_kr_bottom_finder,
     calculate_recovery_confirmation,
+    get_strategic_advice,
     run_historical_backtest,
     get_cashflow_interpretation,
     relative_strength_label,
@@ -471,6 +472,11 @@ with tab2:
     else:
         col4.metric("CNN Fear & Greed", "N/A", cnn_rating)
 
+    vkospi_src = macro_charts.get("vkospi_source", "yfinance (^VKOSPI)")
+    if "yfinance" not in vkospi_src:
+        st.caption(f"※ VKOSPI 데이터 소스: **{vkospi_src}** — 야후 파이낸스 ^VKOSPI 제공 중단으로 대체 소스가 자동 적용되었습니다. "
+                   f"(폴백 순서: yfinance → KRX 직조회 → KOSPI 실현변동성 프록시)")
+
     st.divider()
     st.markdown("#### 🧭 시장 진단 시스템 v23.0 — 글로벌 통합 매크로 + 국면 판별 엔진")
     st.info(
@@ -485,8 +491,8 @@ with tab2:
 
     # ── 레이어 1: 위험 탐지기 (미국 마스터 / 한국 보조) ──
     st.markdown("##### 🚨 글로벌 매크로 & 로컬 수급 위험 탐지기")
-    us_risk_grade, us_risk_color, us_risk_alerts = calculate_us_risk_radar(vix_10y, vix3m_10y, hyg_10y, ief_10y, spy_10y)
-    kr_risk_grade, kr_risk_color, kr_risk_alerts = calculate_kr_risk_radar(vkospi_10y, usd_krw, kospi_10y)
+    us_risk_grade, us_risk_color, us_risk_alerts, us_danger = calculate_us_risk_radar(vix_10y, vix3m_10y, hyg_10y, ief_10y, spy_10y)
+    kr_risk_grade, kr_risk_color, kr_risk_alerts, kr_danger = calculate_kr_risk_radar(vkospi_10y, usd_krw, kospi_10y)
 
     st.markdown(f"<div style='background:{us_risk_color}22; border-left: 6px solid {us_risk_color}; padding:15px; border-radius:8px; font-weight:bold; font-size:1.1em; margin-bottom:10px;'>🇺🇸 [글로벌 마스터] {us_risk_grade}</div>", unsafe_allow_html=True)
     for icon, msg in us_risk_alerts:
@@ -558,6 +564,43 @@ with tab2:
     st.markdown(f"**{rec_verdict}**")
     for icon, msg in rec_signals:
         st.markdown(f"- {icon} {msg}")
+
+    st.divider()
+
+    # ── 🎯 레이어 4: 종합 전략 제언 (위험 × 바닥 × 회복 통합 판단) ──
+    st.markdown("##### 🎯 레이어 4: 종합 전략 제언 — \"그래서 지금 사도 되는가?\"")
+    st.caption(
+        "위험 탐지기 × 바닥 탐지기 × 반등 신뢰도를 교차 결합해 실전 액션으로 번역합니다. "
+        "같은 바닥 점수라도 위험 경보 상태에 따라 처방이 달라집니다. (※ 투자 판단 참고용이며 최종 책임은 본인에게 있습니다)"
+    )
+
+    us_adv_head, us_adv_color, us_adv_actions = get_strategic_advice(
+        us_danger, us_score, us_verdict, us_phase, recovery_score=rec_score
+    )
+    kr_adv_head, kr_adv_color, kr_adv_actions = get_strategic_advice(
+        kr_danger, kr_score, kr_verdict, kr_phase, recovery_score=None
+    )
+
+    adv_col1, adv_col2 = st.columns(2)
+    with adv_col1:
+        st.markdown(
+            f"<div style='background:{us_adv_color}22; border-left: 6px solid {us_adv_color}; "
+            f"padding:15px; border-radius:8px; font-weight:bold; font-size:1.05em; margin-bottom:10px;'>"
+            f"🇺🇸 {us_adv_head}</div>", unsafe_allow_html=True
+        )
+        st.caption(f"판단 근거: 위험 {us_danger}점 · 바닥 {us_score}% · 반등 신뢰도 {rec_score} · {us_phase}")
+        for act in us_adv_actions:
+            st.markdown(f"- {act}")
+
+    with adv_col2:
+        st.markdown(
+            f"<div style='background:{kr_adv_color}22; border-left: 6px solid {kr_adv_color}; "
+            f"padding:15px; border-radius:8px; font-weight:bold; font-size:1.05em; margin-bottom:10px;'>"
+            f"🇰🇷 {kr_adv_head}</div>", unsafe_allow_html=True
+        )
+        st.caption(f"판단 근거: 위험 {kr_danger}점 · 바닥 {kr_score}% · {kr_phase}")
+        for act in kr_adv_actions:
+            st.markdown(f"- {act}")
 
     st.divider()
 
@@ -939,6 +982,12 @@ with tab3:
         f"[11원칙 퀀트 분석 리포트 v23.0] ({now})",
         f"- CNN F&G (시장 심리): {cnn_score} ({cnn_rating})",
         f"- SPY RSI(14) (시장 과열도): {fmt(spy_rsi_val, dig=1)}",
+        "",
+        "【시장 국면 & 시스템 전략 제언】",
+        f"- 🇺🇸 미국: {us_phase} | 위험 탐지 {us_danger}점 | 진바닥 확률 {us_score}% | 반등 신뢰도 {rec_score}/100",
+        f"  → 시스템 제언: {us_adv_head}",
+        f"- 🇰🇷 한국: {kr_phase} | 위험 탐지 {kr_danger}점 | 진바닥 확률 {kr_score}%",
+        f"  → 시스템 제언: {kr_adv_head}",
         "",
         "【스캔 종목 데이터】"
     ]

@@ -2,6 +2,7 @@ import json
 import os
 import requests
 import datetime
+import numpy as np
 import pandas as pd
 import yfinance as yf
 import FinanceDataReader as fdr
@@ -97,14 +98,84 @@ def get_real_cnn_fg():
     df_fg.set_index('Date', inplace=True)
     return current_score, rating, df_fg['y']
 
+# ─────────────────────────────────────────
+# 🆕 VKOSPI 전용 로더 (야후 ^VKOSPI 상장폐지 처리 대응)
+# 폴백 체인: ① yfinance → ② KRX 정보데이터시스템 직조회 → ③ KOSPI 실현변동성 프록시
+# ─────────────────────────────────────────
+KRX_DATA_URL = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
+
+def fetch_vkospi_krx(years=3):
+    """
+    KRX 정보데이터시스템(data.krx.co.kr)에서 VKOSPI(코스피200 변동성지수)를 직접 조회.
+    지수 코드를 하드코딩하지 않고 파인더 API로 매번 자가 탐색 → KRX 개편에도 견고.
+    WAF/네트워크 차단 시 예외를 던져 상위 폴백 체인이 이어받는다.
+    """
+    sess = requests.Session()
+    sess.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Accept-Language": "ko-KR,ko;q=0.9",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": "https://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0201030108",
+    })
+    # 세션 쿠키 부트스트랩
+    sess.get("https://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0201030108", timeout=5)
+
+    # ① 지수 코드 자가 탐색
+    finder = sess.post(KRX_DATA_URL, data={
+        "bld": "dbms/COM/finder_equidx", "locale": "ko_KR", "searchText": "변동성",
+    }, timeout=5).json()
+    cand = [b for b in finder.get("block1", []) if "변동성" in str(b.get("codeName", ""))]
+    if not cand:
+        raise ValueError("KRX에서 VKOSPI 지수 코드 미발견")
+    b = cand[0]
+
+    # ② 시세 조회
+    end   = get_kst_now().strftime("%Y%m%d")
+    start = (get_kst_now() - datetime.timedelta(days=365 * years)).strftime("%Y%m%d")
+    res = sess.post(KRX_DATA_URL, data={
+        "bld": "dbms/MDC/STAT/standard/MDCSTAT00301",
+        "locale": "ko_KR",
+        "indIdx":  b.get("group_code", ""),
+        "indIdx2": b.get("short_code", ""),
+        "strtDd": start, "endDd": end,
+        "share": "2", "money": "3", "csvxls_isNo": "false",
+    }, timeout=8).json()
+    rows = res.get("output", [])
+    if not rows:
+        raise ValueError("KRX VKOSPI 시세 응답 없음")
+
+    df = pd.DataFrame(rows)
+    df["Date"]  = pd.to_datetime(df["TRD_DD"], format="%Y/%m/%d", errors="coerce")
+    df["Close"] = pd.to_numeric(df["CLSPRC_IDX"].astype(str).str.replace(",", ""), errors="coerce")
+    df = df.dropna(subset=["Date", "Close"]).set_index("Date").sort_index()[["Close"]]
+    if df.empty:
+        raise ValueError("KRX VKOSPI 파싱 결과 없음")
+    return df
+
+
+def build_vkospi_proxy(kospi_df):
+    """
+    최후 폴백: KOSPI 20일 실현변동성(연율화 %) × 1.15 (변동성 리스크 프리미엄 보정).
+    VKOSPI는 KOSPI200 내재변동성이므로 스케일이 같아 기존 임계값(25/20/16) 그대로 유효.
+    """
+    if kospi_df is None or kospi_df.empty or len(kospi_df) < 25:
+        return pd.DataFrame()
+    close = kospi_df['Close'].replace(0, np.nan).dropna()  # 0.0 종가 글리치 제거
+    rets = close.pct_change().clip(-0.15, 0.15)             # ±15% 초과 = 데이터 오류로 간주 (지수 역사상 최대 일간 변동 ~±12%)
+    rets = rets.replace([np.inf, -np.inf], np.nan)
+    rv = rets.rolling(20).std() * np.sqrt(252) * 100 * 1.15
+    return pd.DataFrame({"Close": rv}).dropna()
+
+
 @st.cache_data(ttl=600)  # 기존 3600초에서 600초로 축소 (실시간성 확보)
 def get_macro_charts():
     result = {}
     tickers = {
-        "vix_10y": "^VIX", 
-        "vix3m_10y": "^VIX3M", 
-        "spy_10y": "SPY", 
-        "hyg_10y": "HYG", 
+        "vix_10y": "^VIX",
+        "vix3m_10y": "^VIX3M",
+        "spy_10y": "SPY",
+        "hyg_10y": "HYG",
         "ief_10y": "IEF",
         "rsp_10y": "RSP",
         "kospi_10y": "^KS11",
@@ -112,7 +183,7 @@ def get_macro_charts():
         "usdkrw_10y": "KRW=X"
     }
     for k, v in tickers.items():
-        try: 
+        try:
             # 재시도 로직을 내부에 감쌀 수도 있지만, 단일 종목 호출이므로 여기서 간단히 처리
             df = fetch_ticker_history(v, period="10y")
             if not df.empty:
@@ -121,6 +192,26 @@ def get_macro_charts():
             result[k] = df
         except Exception:
             result[k] = pd.DataFrame()
+
+    # ── VKOSPI 3단 폴백 체인 ──
+    vkospi_source = "yfinance (^VKOSPI)"
+    if result.get("vkospi_10y", pd.DataFrame()).empty:
+        try:
+            vk = fetch_vkospi_krx()
+            vk.index = pd.to_datetime(vk.index).normalize()
+            result["vkospi_10y"] = vk
+            vkospi_source = "KRX 정보데이터시스템 직조회"
+        except Exception:
+            pass
+    if result.get("vkospi_10y", pd.DataFrame()).empty:
+        proxy = build_vkospi_proxy(result.get("kospi_10y", pd.DataFrame()))
+        if not proxy.empty:
+            result["vkospi_10y"] = proxy
+            vkospi_source = "프록시 (KOSPI 20일 실현변동성 × 1.15)"
+        else:
+            vkospi_source = "없음 (전체 소스 실패)"
+    result["vkospi_source"] = vkospi_source
+
     return result
 
 @st.cache_data(ttl=1800)
