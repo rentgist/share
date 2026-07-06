@@ -475,7 +475,10 @@ with tab2:
     vkospi_src = macro_charts.get("vkospi_source", "yfinance (^VKOSPI)")
     if "yfinance" not in vkospi_src:
         st.caption(f"※ VKOSPI 데이터 소스: **{vkospi_src}** — 야후 파이낸스 ^VKOSPI 제공 중단으로 대체 소스가 자동 적용되었습니다. "
-                   f"(폴백 순서: yfinance → KRX 직조회 → KOSPI 실현변동성 프록시)")
+                   f"(폴백 순서: yfinance → KRX 직조회 → 실현변동성 프록시)")
+        if "프록시" in vkospi_src:
+            st.caption("⚠️ 프록시는 옵션 내재변동성(선행)이 아닌 과거 수익률 기반(후행)입니다. EWMA 병행으로 반응 속도를 보강했지만, "
+                       "평온한 장에서 블랙스완이 터지는 '첫날'에는 실제 공포 수준보다 낮게 표시될 수 있습니다 — 그날은 VIX·환율 급등 신호를 우선 참고하세요.")
 
     st.divider()
     st.markdown("#### 🧭 시장 진단 시스템 v23.0 — 글로벌 통합 매크로 + 국면 판별 엔진")

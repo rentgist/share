@@ -119,12 +119,14 @@ def fetch_vkospi_krx(years=3):
         "Referer": "https://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0201030108",
     })
     # 세션 쿠키 부트스트랩
-    sess.get("https://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0201030108", timeout=5)
+    # timeout=(연결, 읽기) — KRX WAF가 응답을 블랙홀시키는 경우에도 대시보드 로딩이
+    # 최악 수 초 내로 끝나도록 짧게 제한 (실패 시 즉시 프록시 폴백)
+    sess.get("https://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0201030108", timeout=(2, 3))
 
     # ① 지수 코드 자가 탐색
     finder = sess.post(KRX_DATA_URL, data={
         "bld": "dbms/COM/finder_equidx", "locale": "ko_KR", "searchText": "변동성",
-    }, timeout=5).json()
+    }, timeout=(2, 3)).json()
     cand = [b for b in finder.get("block1", []) if "변동성" in str(b.get("codeName", ""))]
     if not cand:
         raise ValueError("KRX에서 VKOSPI 지수 코드 미발견")
@@ -140,7 +142,7 @@ def fetch_vkospi_krx(years=3):
         "indIdx2": b.get("short_code", ""),
         "strtDd": start, "endDd": end,
         "share": "2", "money": "3", "csvxls_isNo": "false",
-    }, timeout=8).json()
+    }, timeout=(2, 4)).json()
     rows = res.get("output", [])
     if not rows:
         raise ValueError("KRX VKOSPI 시세 응답 없음")
@@ -156,15 +158,24 @@ def fetch_vkospi_krx(years=3):
 
 def build_vkospi_proxy(kospi_df):
     """
-    최후 폴백: KOSPI 20일 실현변동성(연율화 %) × 1.15 (변동성 리스크 프리미엄 보정).
+    최후 폴백: KOSPI 실현변동성 프록시 (연율화 %, ×1.15 변동성 리스크 프리미엄 보정).
     VKOSPI는 KOSPI200 내재변동성이므로 스케일이 같아 기존 임계값(25/20/16) 그대로 유효.
+
+    ⚠️ 후행성 완화: 균등가중 20일 std는 블랙스완 '첫날'의 충격이 1/20로 희석되어 반응이 느리다.
+    → EWMA 변동성(RiskMetrics λ≈0.94)을 병행 계산해 둘 중 큰 값을 채택:
+      공포는 빨리 오르고 천천히 식는 실제 변동성 지수의 거동을 모사.
+    그래도 옵션 내재변동성(선행) 대비 본질적 후행성은 남으므로 UI에 프록시임을 명시한다.
     """
     if kospi_df is None or kospi_df.empty or len(kospi_df) < 25:
         return pd.DataFrame()
     close = kospi_df['Close'].replace(0, np.nan).dropna()  # 0.0 종가 글리치 제거
     rets = close.pct_change().clip(-0.15, 0.15)             # ±15% 초과 = 데이터 오류로 간주 (지수 역사상 최대 일간 변동 ~±12%)
     rets = rets.replace([np.inf, -np.inf], np.nan)
-    rv = rets.rolling(20).std() * np.sqrt(252) * 100 * 1.15
+
+    rv20  = rets.rolling(20).std()                           # 안정적 기준선 (후행)
+    rvewm = rets.ewm(alpha=0.06, min_periods=20).std()       # λ≈0.94 — 충격 당일 즉각 반응
+    rv = pd.concat([rv20, rvewm], axis=1).max(axis=1) * np.sqrt(252) * 100 * 1.15
+    rv = rv.clip(upper=95.0)                                 # VIX 스케일 상한 캡 (100↑는 의미 상실)
     return pd.DataFrame({"Close": rv}).dropna()
 
 
@@ -207,7 +218,7 @@ def get_macro_charts():
         proxy = build_vkospi_proxy(result.get("kospi_10y", pd.DataFrame()))
         if not proxy.empty:
             result["vkospi_10y"] = proxy
-            vkospi_source = "프록시 (KOSPI 20일 실현변동성 × 1.15)"
+            vkospi_source = "프록시 (KOSPI 실현변동성 EWMA·20일 병행, 과거 수익률 기반 후행지표)"
         else:
             vkospi_source = "없음 (전체 소스 실패)"
     result["vkospi_source"] = vkospi_source
