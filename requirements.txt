@@ -4,3 +4,4 @@ pandas
 numpy
 finance-datareader
 requests
+tenacity
