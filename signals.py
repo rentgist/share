@@ -1025,3 +1025,5 @@ def get_tenbagger_signal(d):
     if points >= 3: return "🔥 기관 최선호 대장주 (Rule of 40)" if is_rule_40_passed else "🔥 기관 최선호 대장주"
     if points >= 1: return "🌱 우량 고성장주 (Rule of 40)" if is_rule_40_passed else "🌱 우량 고성장주"
     return "-"
+
+# Force Streamlit to reload this module
