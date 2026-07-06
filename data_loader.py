@@ -189,9 +189,7 @@ def get_macro_charts():
         "hyg_10y": "HYG",
         "ief_10y": "IEF",
         "rsp_10y": "RSP",
-        "kospi_10y": "^KS11",
-        "vkospi_10y": "^VKOSPI",
-        "usdkrw_10y": "KRW=X"
+        "vkospi_10y": "^VKOSPI"
     }
     for k, v in tickers.items():
         try:
@@ -203,6 +201,24 @@ def get_macro_charts():
             result[k] = df
         except Exception:
             result[k] = pd.DataFrame()
+
+    # KOSPI 및 환율은 실시간성이 더 좋은 FinanceDataReader(fdr) 사용
+    start_10y = (pd.Timestamp.now() - pd.DateOffset(years=10)).strftime('%Y-%m-%d')
+    try:
+        df_kospi = fetch_fdr_history("KS11", start_10y)
+        if not df_kospi.empty:
+            df_kospi.index = pd.to_datetime(df_kospi.index).tz_localize(None).normalize()
+            result["kospi_10y"] = df_kospi[~df_kospi.index.duplicated(keep='last')]
+    except Exception:
+        result["kospi_10y"] = pd.DataFrame()
+
+    try:
+        df_usdkrw = fetch_fdr_history("USD/KRW", start_10y)
+        if not df_usdkrw.empty:
+            df_usdkrw.index = pd.to_datetime(df_usdkrw.index).tz_localize(None).normalize()
+            result["usdkrw_10y"] = df_usdkrw[~df_usdkrw.index.duplicated(keep='last')]
+    except Exception:
+        result["usdkrw_10y"] = pd.DataFrame()
 
     # ── VKOSPI 3단 폴백 체인 ──
     vkospi_source = "yfinance (^VKOSPI)"
