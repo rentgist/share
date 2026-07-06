@@ -179,7 +179,7 @@ def build_vkospi_proxy(kospi_df):
     return pd.DataFrame({"Close": rv}).dropna()
 
 
-@st.cache_data(ttl=599)  # 캐시 무효화를 위해 ttl 1초 변경 (600 -> 599)
+@st.cache_data(ttl=598)  # 캐시 무효화를 위해 ttl 1초 변경
 def get_macro_charts():
     result = {}
     tickers = {
@@ -239,7 +239,10 @@ def get_sector_baseline():
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def fetch_ticker_history(ticker_str, period="1y"):
-    return yf.Ticker(ticker_str).history(period=period)
+    df = yf.Ticker(ticker_str).history(period=period)
+    if not df.empty and 'Close' in df.columns:
+        df = df.dropna(subset=['Close'])
+    return df
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def fetch_fdr_history(raw_code, start):
