@@ -482,11 +482,17 @@ with tab2:
         if cnn_score <= 25:   fg_color, fg_stat = "🟢", "극단적 공포 (역발상 매수 구간)"
         elif cnn_score <= 45: fg_color, fg_stat = "🟠", "공포"
         elif cnn_score <= 55: fg_color, fg_stat = "🟡", "중립"
-        elif cnn_score <= 75: fg_color, fg_stat = "🟠", "탐욕 (추격 매수 주의)"
+elif cnn_score <= 75: fg_color, fg_stat = "🟠", "탐욕 (추격 매수 주의)"
         else:                 fg_color, fg_stat = "🚨", "극단적 탐욕 (현금 확보 경계)"
         col4.metric("CNN Fear & Greed", f"{cnn_score} / 100", f"{fg_color} {fg_stat}")
     else:
         col4.metric("CNN Fear & Greed", "N/A", cnn_rating)
+
+    kr_date = kospi_10y.index[-1].strftime('%Y-%m-%d') if not kospi_10y.empty else "N/A"
+    us_date = spy_10y.index[-1].strftime('%Y-%m-%d') if not spy_10y.empty else "N/A"
+    
+    st.markdown("")
+    st.caption(f"🕒 **데이터 최종 반영일** — 한국 시장(KOSPI/환율): `{kr_date}` | 미국 시장(SPY/VIX): `{us_date}`")
 
     vkospi_src = macro_charts.get("vkospi_source", "yfinance (^VKOSPI)")
     if "yfinance" not in vkospi_src:
