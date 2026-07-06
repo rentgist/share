@@ -9,5 +9,5 @@
 ### 🚀 사용 방법
 ```bash
 pip install -r requirements.txt
-streamlit run app.py
+streamlit run final.py
 ```
