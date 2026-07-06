@@ -12,20 +12,27 @@ from data_loader import (
     get_stock_data,
     get_upcoming_events
 )
-from signals import (
-    calculate_us_risk_radar,
-    calculate_kr_risk_radar,
-    calculate_us_bottom_finder,
-    calculate_kr_bottom_finder,
-    calculate_recovery_confirmation,
-    get_strategic_advice,
-    run_historical_backtest,
-    get_cashflow_interpretation,
-    relative_strength_label,
-    get_ai_signal,
-    calculate_smart_target,
-    get_tenbagger_signal
-)
+try:
+    from signals import (
+        calculate_us_risk_radar,
+        calculate_kr_risk_radar,
+        calculate_us_bottom_finder,
+        calculate_kr_bottom_finder,
+        calculate_recovery_confirmation,
+        get_strategic_advice,
+        run_historical_backtest,
+        get_cashflow_interpretation,
+        relative_strength_label,
+        get_ai_signal,
+        calculate_smart_target,
+        get_tenbagger_signal
+    )
+except ImportError as e:
+    st.error(f"🚨 ImportError 발생: {e}")
+    st.stop()
+except Exception as e:
+    st.error(f"🚨 알 수 없는 오류 발생: {e}")
+    st.stop()
 
 st.set_page_config(page_title="11원칙 퀀트 대시보드 v23.0", page_icon="🧭", layout="wide")
 
