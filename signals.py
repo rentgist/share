@@ -547,6 +547,52 @@ def calculate_recovery_confirmation(rsp_hist, spy_hist, hyg_hist, ief_hist):
     return verdict, signals, recovery_score
 
 
+def calculate_kr_recovery_confirmation(kospi_hist, usdkrw_hist):
+    signals = []
+    recovery_score = 0
+
+    if not kospi_hist.empty and len(kospi_hist) >= 50:
+        try:
+            close = kospi_hist['Close']
+            curr_k = float(close.iloc[-1])
+            ma20 = float(close.rolling(20).mean().iloc[-1])
+            ma50 = float(close.rolling(50).mean().iloc[-1])
+            
+            if curr_k > ma20 and curr_k > ma50:
+                signals.append(("🟢", "한국장 추세 완전 회복 — KOSPI가 20일선 및 50일선을 동시 상회 중입니다."))
+                recovery_score += 50
+            elif curr_k > ma20:
+                signals.append(("🟡", "한국장 단기 회복 — KOSPI가 20일선을 회복했으나 아직 50일선 아래에 있습니다."))
+                recovery_score += 25
+            else:
+                signals.append(("🔴", "한국장 추세 미회복 — KOSPI가 주요 이동평균선(20일, 50일)을 하회하고 있습니다."))
+        except Exception:
+            signals.append(("⚪", "KOSPI 추세 데이터 산출 불가."))
+
+    if not usdkrw_hist.empty and len(usdkrw_hist) >= 50:
+        try:
+            curr_fx = float(usdkrw_hist['Close'].iloc[-1])
+            ma20_fx = float(usdkrw_hist['Close'].rolling(20).mean().iloc[-1])
+            ma50_fx = float(usdkrw_hist['Close'].rolling(50).mean().iloc[-1])
+            
+            if curr_fx < ma20_fx and curr_fx < ma50_fx:
+                signals.append(("🟢", "환율(외인 수급) 안정 — 환율이 20일/50일선 아래에서 하향 안정화되어 외인 자금 유입 환경이 조성되었습니다."))
+                recovery_score += 50
+            elif curr_fx < ma20_fx:
+                signals.append(("🟡", "환율 단기 진정 — 환율이 20일선 아래로 내려와 급등세가 진정되었습니다."))
+                recovery_score += 25
+            else:
+                signals.append(("🔴", "환율 불안정 — 환율이 이동평균선 위에 있어 외인 이탈 압력이 여전합니다."))
+        except Exception:
+            signals.append(("⚪", "환율 데이터 산출 불가."))
+
+    if recovery_score >= 100: verdict = "🟢 반등 신뢰도 높음 — 추세 회복 + 환율 안정 동시 충족"
+    elif recovery_score >= 50: verdict = "🟡 반등 신뢰도 보통 — 조건 중 일부만 회복"
+    else: verdict = "🔴 반등 신뢰도 낮음 — 아직 회복 신호 부족"
+
+    return verdict, signals, recovery_score
+
+
 # ═════════════════════════════════════════
 # 🎯 레이어 4: 종합 전략 제언 엔진
 # 위험 탐지기(danger) × 바닥 탐지기(score) × 반등 신뢰도(recovery)를
@@ -689,11 +735,16 @@ def get_strategic_advice(danger_count, bottom_score, bottom_verdict, regime="", 
     # ── 반등 신뢰도(Breadth/Credit)로 증액 여부 미세 조정 ──
     if recovery_score is not None and bottom_score >= 50 and not is_knife:
         if recovery_score >= 100:
-            actions.append("✅ 반등 신뢰도 교차검증: Breadth + Credit 동시 회복 — 2·3차 증액의 객관적 근거 충족.")
+            actions.append("✅ 반등 신뢰도 교차검증: 주요 지표 동시 회복 — 2·3차 증액의 객관적 근거 충족.")
         elif recovery_score >= 50:
             actions.append("🟡 반등 신뢰도 교차검증: 절반만 회복 — 1차 포지션 유지, 증액은 완전 회복 확인 후.")
         else:
             actions.append("🔴 반등 신뢰도 교차검증: 미회복 — 지금 반등은 기술적 반등(데드캣)일 수 있음. 1차 이상 넣지 마세요.")
+
+    # ── 대가의 퀀트 원칙 (장초 추격 매수 금지 & 종가 확인) ──
+    actions.append("🕒 [대가의 타점 원칙] 당일 점수가 아무리 좋아도 다음날 장초 갭상승이나 추격 매수는 절대 금물입니다. 진입 타점은 '오후 2시 30분 이후 종가 무렵'에 확인하고 진입하세요.")
+    if is_knife or danger_count >= 5:
+        actions.append("🛡️ [생존 원칙] 현재처럼 불안정한 구간에서는 '장중 반등'은 속임수일 확률이 높습니다. 반드시 종가 기준 지지 여부를 확인하고 다음 날 판단하세요.")
 
     return headline, color, actions
 

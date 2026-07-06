@@ -19,6 +19,7 @@ try:
         calculate_us_bottom_finder,
         calculate_kr_bottom_finder,
         calculate_recovery_confirmation,
+        calculate_kr_recovery_confirmation,
         get_strategic_advice,
         run_historical_backtest,
         get_cashflow_interpretation,
@@ -568,12 +569,25 @@ with tab2:
     # ── 레이어 3: 회복 확인 ──
     st.markdown("##### ✅ 반등 신뢰도 확인 (바닥 이후 — Breadth & Credit 회복 여부)")
     st.caption("바닥 탐지 점수가 높을 때만 의미 있는 지표예요. 상승장에서는 항상 좋게 나오므로 참고용으로만 보세요.")
-    rec_verdict, rec_signals, rec_score = calculate_recovery_confirmation(
-        rsp_10y, spy_10y, hyg_10y, ief_10y
-    )
-    st.markdown(f"**{rec_verdict}**")
-    for icon, msg in rec_signals:
-        st.markdown(f"- {icon} {msg}")
+    
+    r_col1, r_col2 = st.columns(2)
+    with r_col1:
+        st.markdown(f"**🇺🇸 미국 반등 신뢰도**")
+        us_rec_verdict, us_rec_signals, us_rec_score = calculate_recovery_confirmation(
+            rsp_10y, spy_10y, hyg_10y, ief_10y
+        )
+        st.markdown(f"**{us_rec_verdict}**")
+        for icon, msg in us_rec_signals:
+            st.markdown(f"- {icon} {msg}")
+
+    with r_col2:
+        st.markdown(f"**🇰🇷 한국 반등 신뢰도**")
+        kr_rec_verdict, kr_rec_signals, kr_rec_score = calculate_kr_recovery_confirmation(
+            kospi_10y, usd_krw
+        )
+        st.markdown(f"**{kr_rec_verdict}**")
+        for icon, msg in kr_rec_signals:
+            st.markdown(f"- {icon} {msg}")
 
     st.divider()
 
@@ -585,10 +599,10 @@ with tab2:
     )
 
     us_adv_head, us_adv_color, us_adv_actions = get_strategic_advice(
-        us_danger, us_score, us_verdict, us_phase, recovery_score=rec_score
+        us_danger, us_score, us_verdict, us_phase, recovery_score=us_rec_score
     )
     kr_adv_head, kr_adv_color, kr_adv_actions = get_strategic_advice(
-        kr_danger, kr_score, kr_verdict, kr_phase, recovery_score=None
+        kr_danger, kr_score, kr_verdict, kr_phase, recovery_score=kr_rec_score
     )
 
     adv_col1, adv_col2 = st.columns(2)
@@ -598,7 +612,7 @@ with tab2:
             f"padding:15px; border-radius:8px; font-weight:bold; font-size:1.05em; margin-bottom:10px;'>"
             f"🇺🇸 {us_adv_head}</div>", unsafe_allow_html=True
         )
-        st.caption(f"판단 근거: 위험 {us_danger}점 · 바닥 {us_score}% · 반등 신뢰도 {rec_score} · {us_phase}")
+        st.caption(f"판단 근거: 위험 {us_danger}점 · 바닥 {us_score}% · 반등 신뢰도 {us_rec_score} · {us_phase}")
         for act in us_adv_actions:
             st.markdown(f"- {act}")
 
@@ -608,7 +622,7 @@ with tab2:
             f"padding:15px; border-radius:8px; font-weight:bold; font-size:1.05em; margin-bottom:10px;'>"
             f"🇰🇷 {kr_adv_head}</div>", unsafe_allow_html=True
         )
-        st.caption(f"판단 근거: 위험 {kr_danger}점 · 바닥 {kr_score}% · {kr_phase}")
+        st.caption(f"판단 근거: 위험 {kr_danger}점 · 바닥 {kr_score}% · 반등 신뢰도 {kr_rec_score} · {kr_phase}")
         for act in kr_adv_actions:
             st.markdown(f"- {act}")
 
@@ -994,9 +1008,9 @@ with tab3:
         f"- SPY RSI(14) (시장 과열도): {fmt(spy_rsi_val, dig=1)}",
         "",
         "【시장 국면 & 시스템 전략 제언】",
-        f"- 🇺🇸 미국: {us_phase} | 위험 탐지 {us_danger}점 | 진바닥 확률 {us_score}% | 반등 신뢰도 {rec_score}/100",
+        f"- 🇺🇸 미국: {us_phase} | 위험 탐지 {us_danger}점 | 진바닥 확률 {us_score}% | 반등 신뢰도 {us_rec_score}/100",
         f"  → 시스템 제언: {us_adv_head}",
-        f"- 🇰🇷 한국: {kr_phase} | 위험 탐지 {kr_danger}점 | 진바닥 확률 {kr_score}%",
+        f"- 🇰🇷 한국: {kr_phase} | 위험 탐지 {kr_danger}점 | 진바닥 확률 {kr_score}% | 반등 신뢰도 {kr_rec_score}/100",
         f"  → 시스템 제언: {kr_adv_head}",
         "",
         "【스캔 종목 데이터】"
