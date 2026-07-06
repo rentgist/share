@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import concurrent.futures
 import numpy as np
 import datetime
 import altair as alt
@@ -816,12 +817,15 @@ with tab1:
     all_data, failed_queries = [], []
     if st.session_state.get("scan_requested") and queries:
         prog = st.progress(0.0, text="분석 준비 중...")
-        for i, (region, q) in enumerate(queries):
-            prog.progress((i + 1) / len(queries), text=f"[{i+1}/{len(queries)}] '{q}' 분석 중...")
-            d = get_stock_data(q, is_kr=(region == "한국"), fast_mode=False)
-            d["Region"] = region
-            if not d.get("error"): all_data.append(d)
-            else: failed_queries.append(q)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {executor.submit(get_stock_data, q, is_kr=(region == "한국"), fast_mode=False): (region, q) for region, q in queries}
+            for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                region, q = futures[future]
+                prog.progress((i + 1) / len(queries), text=f"[{i+1}/{len(queries)}] '{q}' 데이터 수집 중...")
+                d = future.result()
+                d["Region"] = region
+                if not d.get("error"): all_data.append(d)
+                else: failed_queries.append(q)
         prog.empty()
     elif not st.session_state.get("scan_requested"):
         st.info("종목을 입력하고 **스캔 시작** 버튼을 누르면 분석이 시작됩니다.")

@@ -5,6 +5,12 @@ import datetime
 import numpy as np
 import pandas as pd
 import yfinance as yf
+import concurrent.futures
+import requests_cache
+
+# yfinance용 캐시 세션 (1시간 유지) - 429 Rate Limit 방지 및 속도 최적화
+yf_session = requests_cache.CachedSession('yfinance.cache', expire_after=3600)
+
 import FinanceDataReader as fdr
 import streamlit as st
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -77,7 +83,7 @@ def get_upcoming_events():
 # 매크로 지표
 # ─────────────────────────────────────────
 @st.cache_data(ttl=600)  # 기존 1800초에서 600초로 축소
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=0.5, min=0.5, max=1))
 def get_real_cnn_fg():
     url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
     headers = {
@@ -191,16 +197,21 @@ def get_macro_charts():
         "rsp_10y": "RSP",
         "vkospi_10y": "^VKOSPI"
     }
-    for k, v in tickers.items():
+    def fetch_macro(k, v):
         try:
-            # 재시도 로직을 내부에 감쌀 수도 있지만, 단일 종목 호출이므로 여기서 간단히 처리
             df = fetch_ticker_history(v, period="10y")
             if not df.empty:
                 df.index = pd.to_datetime(df.index).tz_localize(None).normalize()
-                df = df[~df.index.duplicated(keep='last')]
-            result[k] = df
+                return k, df[~df.index.duplicated(keep='last')]
         except Exception:
-            result[k] = pd.DataFrame()
+            pass
+        return k, pd.DataFrame()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(fetch_macro, k, v) for k, v in tickers.items()]
+        for future in concurrent.futures.as_completed(futures):
+            k, df = future.result()
+            result[k] = df
 
     # KOSPI 및 환율은 실시간성이 더 좋은 FinanceDataReader(fdr) 사용
     start_10y = (pd.Timestamp.now() - pd.DateOffset(years=10)).strftime('%Y-%m-%d')
@@ -253,18 +264,18 @@ def get_sector_baseline():
             res[name] = None
     return res
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=0.5, min=0.5, max=1))
 def fetch_ticker_history(ticker_str, period="1y"):
     df = yf.Ticker(ticker_str).history(period=period)
     if not df.empty and 'Close' in df.columns:
         df = df.dropna(subset=['Close'])
     return df
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=0.5, min=0.5, max=1))
 def fetch_fdr_history(raw_code, start):
     return fdr.DataReader(raw_code, start=start)
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+@retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=0.5, min=0.5, max=1))
 def fetch_ticker_info(tk):
     """
     yfinance .info 방어 계층: rate limit(429) 시 빈 dict가 조용히 반환되는 것을

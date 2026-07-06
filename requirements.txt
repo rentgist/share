@@ -6,3 +6,4 @@ finance-datareader
 requests
 tenacity
 altair
+requests-cache
