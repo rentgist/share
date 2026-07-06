@@ -354,15 +354,15 @@ def calculate_kr_bottom_finder(kospi_hist, vkospi_hist, usdkrw_hist):
     score = min(int(score), 100)
 
     is_falling_knife = False
-    if len(spy_close) >= 5:
-        spy_1d_ret = (float(spy_close.iloc[-1]) / float(spy_close.iloc[-2]) - 1) * 100
-        ma5 = float(spy_close.rolling(5).mean().iloc[-1])
-        gap_ma5 = (curr_spy - ma5) / ma5 * 100
+    if len(kospi_close) >= 5:
+        k_1d_ret = (float(kospi_close.iloc[-1]) / float(kospi_close.iloc[-2]) - 1) * 100
+        ma5 = float(kospi_close.rolling(5).mean().iloc[-1])
+        gap_ma5 = (curr_kospi - ma5) / ma5 * 100
         
-        if spy_1d_ret <= -2.5 or gap_ma5 <= -4.0:
+        if k_1d_ret <= -2.5 or gap_ma5 <= -4.0:
             is_falling_knife = True
             if score >= 35:
-                details.append(f"🚨 [Safety Catch] 당일 급락({spy_1d_ret:.1f}%) 또는 5일선 심각한 이탈({gap_ma5:.1f}%). 브레이크(양봉) 확인 후 진입 권장. (-20점 차감)")
+                details.append(f"🚨 [Safety Catch] 당일 급락({k_1d_ret:.1f}%) 또는 5일선 심각한 이탈({gap_ma5:.1f}%). 브레이크(양봉) 확인 후 진입 권장. (-20점 차감)")
                 score = max(score - 20, 0)
 
     if drawdown > -5: verdict = "📈 고점권 — 바닥 탐지 불가"
