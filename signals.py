@@ -451,28 +451,56 @@ def calculate_kr_bottom_finder(kospi_hist, vkospi_hist, usdkrw_hist):
 
     # ① Drawdown (만점 35)
     max_score += 35
-    if drawdown <= -20: score += 35; details.append(f"🟢 KOSPI 대세 하락장 ({drawdown:.1f}%) [+35/35]")
-    elif drawdown <= -12: score += 22; details.append(f"🟢 KOSPI 깊은 조정 ({drawdown:.1f}%) [+22/35]")
-    elif drawdown <= -7: score += 10; details.append(f"🟡 KOSPI 단기 조정 ({drawdown:.1f}%) [+10/35]")
-    else: details.append(f"⚪ 고점 근처 ({drawdown:.1f}%) [+0/35]")
+    dd = -drawdown
+    if dd >= 20: 
+        score += 35; details.append(f"🟢 KOSPI 대세 하락장 ({drawdown:.1f}%) [+35/35]")
+    elif dd >= 12: 
+        pts = 22 + (dd - 12) * (35 - 22) / (20 - 12)
+        score += pts; details.append(f"🟢 KOSPI 깊은 조정 ({drawdown:.1f}%) [+{pts:.1f}/35]")
+    elif dd >= 7: 
+        pts = 10 + (dd - 7) * (22 - 10) / (12 - 7)
+        score += pts; details.append(f"🟡 KOSPI 단기 조정 ({drawdown:.1f}%) [+{pts:.1f}/35]")
+    elif dd > 0:
+        pts = dd * 10 / 7
+        score += pts; details.append(f"⚪ 얕은 조정 ({drawdown:.1f}%) [+{pts:.1f}/35]")
+    else: 
+        details.append(f"⚪ 고점 근처 ({drawdown:.1f}%) [+0/35]")
 
     # ② RSI (만점 20)
     kr_rsi = calc_rsi(kospi_close, 14)
     if kr_rsi is not None:
         max_score += 20
-        if kr_rsi <= 30: score += 20; details.append(f"🟢 KOSPI 극단 과매도 ({kr_rsi:.1f}) [+20/20]")
-        elif kr_rsi <= 40: score += 12; details.append(f"🟢 KOSPI 과매도 ({kr_rsi:.1f}) [+12/20]")
-        elif kr_rsi <= 45: score += 5;  details.append(f"🟡 KOSPI 과매도 진입 ({kr_rsi:.1f}) [+5/20]")
-        else: details.append(f"⚪ KOSPI RSI 정상 ({kr_rsi:.1f}) [+0/20]")
+        if kr_rsi <= 30: 
+            score += 20; details.append(f"🟢 KOSPI 극단 과매도 ({kr_rsi:.1f}) [+20/20]")
+        elif kr_rsi <= 40: 
+            pts = 12 + (40 - kr_rsi) * (20 - 12) / (40 - 30)
+            score += pts; details.append(f"🟢 KOSPI 과매도 ({kr_rsi:.1f}) [+{pts:.1f}/20]")
+        elif kr_rsi <= 45: 
+            pts = 5 + (45 - kr_rsi) * (12 - 5) / (45 - 40)
+            score += pts; details.append(f"🟡 KOSPI 과매도 진입 ({kr_rsi:.1f}) [+{pts:.1f}/20]")
+        elif kr_rsi <= 60:
+            pts = (60 - kr_rsi) * 5 / (60 - 45)
+            score += pts; details.append(f"⚪ KOSPI RSI 정상 ({kr_rsi:.1f}) [+{pts:.1f}/20]")
+        else: 
+            details.append(f"⚪ KOSPI RSI 높음 ({kr_rsi:.1f}) [+0/20]")
 
     # ③ VKOSPI (만점 25) — 누락 시 만점에서 자동 제외 (하드코딩 환산 제거)
     curr_vkospi = float(vkospi_hist['Close'].iloc[-1]) if not vkospi_hist.empty else None
     if curr_vkospi and not np.isnan(curr_vkospi):
         max_score += 25
-        if curr_vkospi >= 25: score += 25; details.append(f"🟢 VKOSPI 패닉 투매 ({curr_vkospi:.1f}) [+25/25]")
-        elif curr_vkospi >= 20: score += 15; details.append(f"🟢 VKOSPI 공포 확산 ({curr_vkospi:.1f}) [+15/25]")
-        elif curr_vkospi >= 16: score += 5;  details.append(f"🟡 VKOSPI 상승 주의 ({curr_vkospi:.1f}) [+5/25]")
-        else: details.append(f"⚪ VKOSPI 평온 ({curr_vkospi:.1f}) [+0/25]")
+        if curr_vkospi >= 25: 
+            score += 25; details.append(f"🟢 VKOSPI 패닉 투매 ({curr_vkospi:.1f}) [+25/25]")
+        elif curr_vkospi >= 20: 
+            pts = 15 + (curr_vkospi - 20) * (25 - 15) / (25 - 20)
+            score += pts; details.append(f"🟢 VKOSPI 공포 확산 ({curr_vkospi:.1f}) [+{pts:.1f}/25]")
+        elif curr_vkospi >= 16: 
+            pts = 5 + (curr_vkospi - 16) * (15 - 5) / (20 - 16)
+            score += pts; details.append(f"🟡 VKOSPI 상승 주의 ({curr_vkospi:.1f}) [+{pts:.1f}/25]")
+        elif curr_vkospi >= 12:
+            pts = (curr_vkospi - 12) * 5 / (16 - 12)
+            score += pts; details.append(f"⚪ VKOSPI 평온 ({curr_vkospi:.1f}) [+{pts:.1f}/25]")
+        else: 
+            details.append(f"⚪ VKOSPI 매우 평온 ({curr_vkospi:.1f}) [+0/25]")
     else:
         details.append("⚪ VKOSPI 데이터 누락 — 만점에서 제외해 자동 보정 [+0점]")
 
@@ -481,10 +509,16 @@ def calculate_kr_bottom_finder(kospi_hist, vkospi_hist, usdkrw_hist):
         krw_rsi = calc_rsi(usdkrw_hist['Close'], 14)
         if krw_rsi is not None:
             max_score += 20
-            if krw_rsi <= 55: score += 20; details.append(f"🟢 환율 안정 및 원화 강세 (RSI {krw_rsi:.1f}) [+20/20]")
-            elif krw_rsi <= 65: score += 10; details.append(f"🟡 환율 약세 구간 (RSI {krw_rsi:.1f}) [+10/20]")
+            if krw_rsi <= 55: 
+                score += 20; details.append(f"🟢 환율 안정 및 원화 강세 (RSI {krw_rsi:.1f}) [+20/20]")
+            elif krw_rsi <= 65: 
+                pts = 10 + (65 - krw_rsi) * (20 - 10) / (65 - 55)
+                score += pts; details.append(f"🟡 환율 약세 구간 (RSI {krw_rsi:.1f}) [+{pts:.1f}/20]")
+            elif krw_rsi <= 75:
+                pts = (75 - krw_rsi) * 10 / (75 - 65)
+                score += pts; details.append(f"🚨 환율 단기 폭등 위험 (RSI {krw_rsi:.1f}) [+{pts:.1f}/20]")
             else:
-                details.append(f"🚨 환율 단기 폭등 위험 (RSI {krw_rsi:.1f}) [+0/20]")
+                details.append(f"🚨 환율 극단적 폭등 (RSI {krw_rsi:.1f}) [+0/20]")
                 if krw_rsi > 70 and drawdown > -10:
                     kill_switch = True
                     details.append("💣 [Kill Switch] 코스피 낙폭 적은데 환율 초급등. 폭락 초입 가능성으로 최종 점수 30점 제한.")
