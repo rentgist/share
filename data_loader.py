@@ -172,9 +172,9 @@ def build_vkospi_proxy(kospi_df):
     rets = close.pct_change().clip(-0.15, 0.15)             # ±15% 초과 = 데이터 오류로 간주 (지수 역사상 최대 일간 변동 ~±12%)
     rets = rets.replace([np.inf, -np.inf], np.nan)
 
-    rv20  = rets.rolling(20).std()                           # 안정적 기준선 (후행)
-    rvewm = rets.ewm(alpha=0.06, min_periods=20).std()       # λ≈0.94 — 충격 당일 즉각 반응
-    rv = pd.concat([rv20, rvewm], axis=1).max(axis=1) * np.sqrt(252) * 100 * 1.15
+    rv20  = rets.rolling(20).std()                           # 일반 이동표준편차 (지연됨)
+    rvewm = rets.ewm(alpha=0.06, min_periods=20).std()       # 반감기 0.94 수준의 지수 가중
+    rv = pd.concat([rv20, rvewm], axis=1).max(axis=1) * np.sqrt(252) * 100
     rv = rv.clip(upper=95.0)                                 # VIX 스케일 상한 캡 (100↑는 의미 상실)
     return pd.DataFrame({"Close": rv}).dropna()
 
