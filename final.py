@@ -736,7 +736,39 @@ with tab2:
         else:
             st.warning("S&P 500 데이터를 불러오지 못했습니다.")
 
-    st.markdown("**③ CNN Fear & Greed Index (최근 1~2년)**")
+    c_chart3, c_chart4 = st.columns(2)
+    with c_chart3:
+        st.markdown("**③ VKOSPI 프록시 (한국 공포 지수) — 10년**")
+        if not vkospi_10y.empty:
+            st.line_chart(
+                pd.DataFrame({
+                    "VKOSPI Proxy": vkospi_10y['Close'],
+                    "🔴 위험선(30)": 30.0,
+                    "🟢 평온선(15)": 15.0,
+                }),
+                height=280,
+                color=["#1f77b4", "#ff4b4b", "#21c354"]
+            )
+        else:
+            st.warning("VKOSPI 데이터를 불러오지 못했습니다.")
+
+    with c_chart4:
+        st.markdown("**④ KOSPI — 10년**")
+        if not kospi_10y.empty:
+            st.line_chart(
+                pd.DataFrame({"KOSPI": kospi_10y['Close']}),
+                height=280,
+                color=["#ff7f0e"]
+            )
+            kospi_high = round(float(kospi_10y['Close'].max()), 2)
+            kospi_low  = round(float(kospi_10y['Close'].min()), 2)
+            current_kospi_val = round(float(kospi_10y['Close'].iloc[-1]), 2) if not kospi_10y.empty else "N/A"
+            kospi_pos  = round((current_kospi_val - kospi_low) / (kospi_high - kospi_low) * 100, 1) if current_kospi_val != "N/A" else "N/A"
+            st.caption(f"10년 고점 {kospi_high:,.2f} / 저점 {kospi_low:,.2f} | 현재 10년 범위 내 위치: **{kospi_pos}%**")
+        else:
+            st.warning("KOSPI 데이터를 불러오지 못했습니다.")
+
+    st.markdown("**⑤ CNN Fear & Greed Index (최근 1~2년)**")
     if cnn_history is not None:
         st.line_chart(
             pd.DataFrame({
