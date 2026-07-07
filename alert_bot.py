@@ -85,12 +85,23 @@ def run_alert_logic():
 
     # 4. 종합 알림 발송
     if messages:
-        final_message = "🔔 **[11원칙 퀀트 에이전트 정기 보고]** 🔔\n\n" + "\n\n---\n\n".join(messages)
-        print("\n[전송할 메시지 미리보기]\n" + final_message + "\n")
-        if token and chat_id:
-            send_telegram_alert(token, chat_id, final_message)
+        final_message = "🔔 **[11원칙 퀀트 에이전트 긴급 보고]** 🔔\n\n" + "\n\n---\n\n".join(messages)
     else:
-        print("💤 임계치를 넘는 특이사항이 없어 알림을 생략합니다.")
+        # 조건 미달이어도 테스트 및 상태 확인용으로 요약 메시지 전송
+        us_s = us_score if 'us_score' in locals() else "N/A"
+        kr_s = kr_score if 'kr_score' in locals() else "N/A"
+        final_message = (
+            f"💤 **[11원칙 퀀트 에이전트 정기 보고]**\n"
+            f"임계치({SCORE_THRESHOLD}점)를 넘는 특이사항이 없습니다.\n\n"
+            f"📊 **현재 진바닥 점수**\n"
+            f"🇺🇸 미국: `{us_s}점`\n"
+            f"🇰🇷 한국: `{kr_s}점`"
+        )
+        print("💤 임계치 미달. 요약 상태를 전송합니다.")
+
+    print("\n[전송할 메시지 미리보기]\n" + final_message + "\n")
+    if token and chat_id:
+        send_telegram_alert(token, chat_id, final_message)
 
 if __name__ == "__main__":
     run_alert_logic()
