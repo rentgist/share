@@ -125,329 +125,173 @@ tab1, tab2, tab4, tab3, tab_port, tab5, tab_risk = st.tabs([
     "🚨 리스크 등급 가이드",
 ])
 
-with tab_port:
-    st.subheader("💼 내 포트폴리오 장투 전략 분석 (1~2년 기준)")
-    st.caption("보유 종목과 매수가를 입력하면 현재 손익 현황 + 11원칙 종합평가 + AI 전달용 장투 전략 리포트를 생성합니다.")
+with tab1:
+    st.subheader("🔍 관심 종목 스캔")
+    c1, c2 = st.columns(2)
+    us_input = c1.text_input("🇺🇸 미국 주식", "TSMC, 브로드컴, 버티브")
+    kr_input = c2.text_input("🇰🇷 한국 주식", "LS ELECTRIC")
 
-    st.markdown("#### 📝 보유 종목 입력")
-    st.info(
-        "**입력 형식:** 종목명:매수가 (쉼표로 구분)\n\n"
-        "🇺🇸 미국: `브로드컴:320.5, 버티브:250, TSMC:180`\n\n"
-        "🇰🇷 한국: `LS ELECTRIC:185000, 피에스케이홀딩스:120000`"
+    queries = (
+        [("미국", q.strip()) for q in us_input.split(",") if q.strip()] +
+        [("한국", q.strip()) for q in kr_input.split(",") if q.strip()]
     )
 
-    col_us, col_kr = st.columns(2)
-    port_us_raw = col_us.text_input("🇺🇸 미국 보유 종목 (달러 매수가)", "브로드컴:320.5, 버티브:250, TSMC:180")
-    port_kr_raw = col_kr.text_input("🇰🇷 한국 보유 종목 (원화 매수가)", "LS ELECTRIC:185000")
+    # 버튼 게이트: 다른 탭 위젯 조작으로 rerun될 때마다 무거운 API 호출이
+    # 자동 발생하는 것을 차단. 한 번 스캔하면 session_state로 유지.
+    if st.button("🔍 스캔 시작 (재무제표 교차 검증 포함)", type="primary", key="scan_btn"):
+        st.session_state["scan_requested"] = True
 
-    def parse_portfolio_input(raw: str, region: str):
-        items = []
-        for chunk in raw.split(","):
-            chunk = chunk.strip()
-            if ":" not in chunk:
-                continue
-            parts = chunk.rsplit(":", 1)
-            if len(parts) == 2:
-                name = parts[0].strip()
-                try:
-                    price = float(parts[1].strip().replace(",", ""))
-                    items.append((name, price, region))
-                except ValueError:
-                    pass
-        return items
+    all_data, failed_queries = [], []
+    if st.session_state.get("scan_requested") and queries:
+        prog = st.progress(0.0, text="분석 준비 중...")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {executor.submit(get_stock_data, q, is_kr=(region == "한국"), fast_mode=False): (region, q) for region, q in queries}
+            for i, future in enumerate(concurrent.futures.as_completed(futures)):
+                region, q = futures[future]
+                prog.progress((i + 1) / len(queries), text=f"[{i+1}/{len(queries)}] '{q}' 데이터 수집 중...")
+                d = future.result()
+                d["Region"] = region
+                if not d.get("error"): all_data.append(d)
+                else: failed_queries.append(q)
+        prog.empty()
+    elif not st.session_state.get("scan_requested"):
+        st.info("종목을 입력하고 **스캔 시작** 버튼을 누르면 분석이 시작됩니다.")
 
-    port_items = (
-        parse_portfolio_input(port_us_raw, "미국") +
-        parse_portfolio_input(port_kr_raw, "한국")
-    )
+    if failed_queries:
+        st.warning(f"⚠️ 데이터 조회 실패 (오타 확인): {', '.join(failed_queries)}")
 
-    if st.button("🔍 장투 전략 분석 시작", type="primary"):
-        if not port_items:
-            st.warning("종목을 올바른 형식으로 입력해 주세요.")
-        else:
-            port_data = []
-            prog = st.progress(0.0, text="보유 종목 데이터 수집 준비 중...")
-            for i, (name, buy_price, region) in enumerate(port_items):
-                prog.progress((i + 1) / len(port_items), text=f"[{i+1}/{len(port_items)}] '{name}' 재무제표 교차 검증 중...")
-                d = get_stock_data(name, is_kr=(region == "한국"), fast_mode=False)
-                d["Region"]    = region
-                d["BuyPrice"]  = buy_price
-                if not d.get("error"):
-                    port_data.append(d)
-                else:
-                    st.warning(f"⚠️ '{name}' 데이터 조회 실패: {d.get('error')}")
-            prog.empty()
+    if all_data:
+        signal_rows, tech_rows, fin_rows, risk_rows = [], [], [], []
+        insider_blocks = []
 
-            if not port_data:
-                st.error("조회된 종목이 없습니다. 종목명을 확인해 주세요.")
+        for d in all_data:
+            ai_sig = get_ai_signal(d)
+            tb_sig = get_tenbagger_signal(d)
+            target_p, target_desc = calculate_smart_target(d, ai_sig)
+            curr_price_str = fmt_price(d.get("Price"), d["Region"])
+            target_str     = "-" if target_p == "-" else fmt_price(target_p, d["Region"])
+
+            signal_rows.append({
+                "종목":        d["Name"],
+                "장투 시그널": ai_sig,
+                "💡 타점":     f"{target_desc} ({target_str})",
+                "현재가":      curr_price_str,
+                "등락률":      fmt_change(d.get("Change")),
+                "시가총액":    fmt_mcap(d.get("MarketCap"), d["Region"]),
+            })
+
+            rs_txt = relative_strength_label(d.get("RSI_14"), spy_rsi_val)
+
+            w52_pos = d.get("W52_pos")
+            if w52_pos is not None:
+                if w52_pos <= 15:   pos_label = f"📍 {w52_pos}% (52주 바닥권)"
+                elif w52_pos <= 30: pos_label = f"📍 {w52_pos}% (하단 30%)"
+                elif w52_pos >= 85: pos_label = f"📍 {w52_pos}% (고점권)"
+                elif w52_pos >= 70: pos_label = f"📍 {w52_pos}% (상단 30%)"
+                else:               pos_label = f"📍 {w52_pos}% (중간권)"
             else:
-                st.markdown("---")
-                st.markdown("### 📊 1. 현재 손익 현황")
+                pos_label = "N/A"
 
-                pnl_rows = []
-                for d in port_data:
-                    buy_p   = d["BuyPrice"]
-                    cur_p   = d.get("Price")
-                    region  = d["Region"]
-                    if cur_p is None:
-                        continue
-                    cur_p_f = float(cur_p)
-                    pnl_pct = round((cur_p_f - buy_p) / buy_p * 100, 2)
-                    pnl_sign = "+" if pnl_pct >= 0 else ""
+            tech_rows.append({
+                "종목":           d["Name"],
+                "시장대비 강도":  rs_txt,
+                "52주 위치":      pos_label,
+                "고점 대비":      fmt(d.get("Gap_High"), "%", dig=1),
+                "RSI(7일)":      fmt(d.get("RSI_7"),  dig=1),
+                "RSI(14일)":     fmt(d.get("RSI_14"), dig=1),
+                "RSI(21일)":     fmt(d.get("RSI_21"), dig=1),
+                "MACD":          d.get("MACD_dir", "N/A"),
+                "거래강도":       fmt(d.get("Vol_ratio"), "%", dig=1),
+                "20일 이격":      fmt(d.get("MA20_gap"), "%", dig=1),
+            })
 
-                    ma20    = d.get("MA20")
-                    bb_low  = d.get("BB_lower")
+            fin_rows.append({
+                "종목":          d["Name"],
+                "Rule of 40":    fmt(d.get("Rule_of_40"), "%", dig=1) if d.get("Rule_of_40") is not None else "N/A",
+                "EV/EBITDA":     fmt(d.get("EV_EBITDA"), "x", dig=1),
+                "EV/FCF":        fmt(d.get("EV_FCF"), "x", dig=1),
+                "매출총이익률":  pct(d.get("Gross_Margin")),
+                "영업이익률":    pct(d.get("Op_Margin")),
+                "ROIC":          pct(d.get("ROIC")),
+                "FCF Yield":     pct(d.get("FCF_Yield")),
+                "FCF/Share":     fmt(d.get("FCFPS"), pfx="$" if d["Region"] == "미국" else "₩", dig=2),
+                "자사주 매입":   fmt_buyback(d.get("Buybacks"), d["Region"]),
+                "Forward PER":   fmt(d.get("Forward_PER"), dig=1),
+                "PEG":           fmt(d.get("PEG"), dig=2),
+            })
 
-                    def _dist(ref):
-                        if ref is None: return "N/A"
-                        return f"{round((cur_p_f - float(ref)) / float(ref) * 100, 1):+.1f}%"
+            risk_rows.append({
+                "종목":            d["Name"],
+                "종합 리스크 등급": d.get("Risk_Grade", "N/A"),
+                "다음 실적일":     d.get("Next_Earning", "N/A"),
+                "내부자 매수":     d.get("Insider_Buy",  "N/A"),
+                "어닝 서프라이즈 (최근 8Q)": d.get("Earnings_Beat","N/A"),
+                "공매도 비율":     d.get("Short_Interest","N/A"),
+                "Beta":           d.get("Beta",          "N/A"),
+                "최신 헤드라인":   (str(d.get("Latest_News",""))[:50]+"...") if len(str(d.get("Latest_News",""))) > 50 else d.get("Latest_News","N/A"),
+            })
 
-                    pnl_rows.append({
-                        "종목":        d["Name"],
-                        "지역":        "🇺🇸" if region == "미국" else "🇰🇷",
-                        "매수가":      f"${buy_p:,.2f}" if region == "미국" else f"{int(buy_p):,}원",
-                        "현재가":      fmt_price(cur_p, region),
-                        "수익률":      f"{pnl_sign}{pnl_pct:.2f}%",
-                        "20일선 위치": _dist(ma20),
-                        "볼밴 하단까지": _dist(bb_low),
-                        "52주 위치":   f"{d.get('W52_pos', 'N/A')}%",
-                    })
+            if d.get("Insider_Buy") == "🟢 매수 기록 있음" and d.get("Insider_Detail"):
+                insider_blocks.append({
+                    "name":   d["Name"],
+                    "detail": d["Insider_Detail"],
+                    "url":    d.get("Edgar_URL", ""),
+                })
+            elif d.get("Edgar_URL"):
+                insider_blocks.append({
+                    "name":   d["Name"],
+                    "detail": "",
+                    "url":    d.get("Edgar_URL", ""),
+                })
 
-                pnl_df = pd.DataFrame(pnl_rows).set_index("종목")
+        st.markdown("#### 🎯 1. 11원칙 매매 시그널 & 눌림목 타점")
+        st.dataframe(
+            pd.DataFrame(signal_rows).set_index("종목").style.map(color_df),
+            use_container_width=True
+        )
 
-                def color_pnl(val):
-                    if isinstance(val, str) and val.endswith('%') and (val.startswith('+') or val.startswith('-') or (val[0].isdigit())):
-                        try:
-                            num = float(val.replace('%','').replace('+',''))
-                            if num > 0:   return 'color: #ff4b4b; font-weight: bold'
-                            elif num < 0: return 'color: #0068c9; font-weight: bold'
-                        except: pass
-                    return ''
+        st.markdown("#### 📈 2. 기술적 지표 (상대강도 + 멀티RSI + 52주 위치)")
+        st.dataframe(
+            pd.DataFrame(tech_rows).set_index("종목").style.map(
+                color_df, subset=["시장대비 강도","고점 대비","거래강도","20일 이격"]
+            ),
+            use_container_width=True
+        )
+        st.caption(
+            "💡 **시장대비 강도**: SPY ETF RSI(14일)와 비교. 양수 = 시장보다 강함. "
+            "| **52주 위치**: 0% = 52주 최저, 100% = 최고. "
+            "| **고점 대비**: 52주 고점에서 얼마나 내려왔는지 (음수)."
+        )
 
-                st.dataframe(pnl_df.style.map(color_pnl, subset=["수익률","20일선 위치","볼밴 하단까지"]), use_container_width=True)
+        st.markdown("#### 🚨 3. 리스크 관리 (종합 등급 · 실적일 · 내부자 · 공매도 · Beta · 뉴스)")
+        st.dataframe(
+            pd.DataFrame(risk_rows).set_index("종목").style.map(
+                color_df, subset=["종합 리스크 등급", "내부자 매수"]
+            ),
+            use_container_width=True
+        )
 
-                st.markdown("---")
-                st.markdown("### 🧭 2. 종목별 종합 분석")
-
-                for d in port_data:
-                    buy_p   = d["BuyPrice"]
-                    cur_p   = d.get("Price")
-                    region  = d["Region"]
-                    if cur_p is None: continue
-
-                    cur_p_f  = float(cur_p)
-                    pnl_pct  = round((cur_p_f - buy_p) / buy_p * 100, 2)
-                    ai_sig   = get_ai_signal(d)
-                    tb_sig   = get_tenbagger_signal(d) 
-                    rs_txt   = relative_strength_label(d.get("RSI_14"), spy_rsi_val)
-                    risk_g   = d.get("Risk_Grade", "N/A")
-                    rsi14    = d.get("RSI_14")
-                    w52      = d.get("W52_pos")
-
-                    fund_score = 0
-                    fund_detail = []
-                    rev_g  = d.get("Rev_Growth") or 0
-                    op_m   = d.get("Op_Margin")  or 0
-                    roe_v  = d.get("ROE")         or 0
-                    peg_v  = d.get("PEG")         or 99
-                    per_v  = d.get("PER")
-                    
-                    gap_high = float(d.get("Gap_High") or 0)
-                    is_turnaround = d.get("Is_Turnaround", False)
-
-                    if float(rev_g) >= 0.20:
-                        fund_score += 1; fund_detail.append("✅ 매출성장 20%↑")
+        if insider_blocks:
+            st.markdown("#### 🔗 내부자 거래 상세 & SEC EDGAR 원문 링크")
+            for block in insider_blocks:
+                with st.expander(f"📋 {block['name']} — 내부자 거래 상세"):
+                    if block["detail"]:
+                        st.info(block["detail"])
                     else:
-                        fund_detail.append(f"❌ 매출성장 미달 ({pct(rev_g)})")
-
-                    if float(op_m) >= 0.10:
-                        fund_score += 1; fund_detail.append("✅ 영업이익률 10%↑")
-                    else:
-                        if is_turnaround:
-                            fund_score += 1; fund_detail.append("🔄 흑자전환 기대 (Forward EPS 턴어라운드)")
-                        else:
-                            fund_detail.append(f"❌ 영업이익률 미달 ({pct(op_m)})")
-
-                    if float(roe_v) >= 0.05:
-                        fund_score += 1; fund_detail.append("✅ ROE 5%↑")
-                    else:
-                        fund_detail.append(f"❌ ROE 미달 ({pct(roe_v)})")
-
-                    if 0 < float(peg_v) <= 1.5:
-                        fund_score += 1; fund_detail.append(f"✅ PEG {float(peg_v):.2f} (저평가)")
-                    else:
-                        fund_detail.append(f"⚠️ PEG {fmt(peg_v, dig=2)} (고평가 or N/A)")
-
-                    if per_v and float(per_v) < 30:
-                        fund_score += 1; fund_detail.append(f"✅ PER {float(per_v):.1f} (합리적)")
-                    else:
-                        fund_detail.append(f"⚠️ PER {fmt(per_v, dig=1)} (높음 or N/A)")
-
-                    hold_signals = []
-                    if fund_score >= 4: hold_signals.append("💎 펀더멘탈 우수")
-                    elif fund_score >= 2: hold_signals.append("⚠️ 펀더멘탈 보통")
-                    else: hold_signals.append("🚨 펀더멘탈 약함")
-
-                    if rsi14 and float(rsi14) < 45: hold_signals.append("🔥 기술적 저점 구간")
-                    elif rsi14 and float(rsi14) > 70: hold_signals.append("⚠️ 기술적 과매수")
-
-                    if w52 and float(w52) <= 30: hold_signals.append("📍 52주 하단권 (매수 기회)")
-                    
-                    if gap_high < -30.0 and cnn_score is not None and cnn_score <= 25:
-                        hold_signals.append("🚨 위기 투매 발생 (11원칙 낙폭 과대 줍줍 구간)")
-
-                    if d.get("Insider_Buy") == "🟢 매수 기록 있음": hold_signals.append("🟢 내부자 매수 확인")
-
-                    if pnl_pct >= 20: hold_signals.append("💰 수익 구간 (일부 익절 고려)")
-                    elif pnl_pct <= -15: hold_signals.append("🔻 손실 구간 (손절 or 물타기 검토)")
-
-                    if fund_score >= 3 and (rsi14 is None or float(rsi14) < 70):
-                        lt_verdict = "🟢 장투 유지 적합"
-                        verdict_color = "#ccffcc"
-                    elif fund_score >= 2 and pnl_pct > -20:
-                        lt_verdict = "🟡 조건부 유지 (펀더멘탈 모니터링 필요)"
-                        verdict_color = "#fff9cc"
-                    else:
-                        lt_verdict = "🔴 재검토 필요 (펀더멘탈 약화 or 손실 심화)"
-                        verdict_color = "#ffdddd"
-
-                    with st.expander(
-                        f"{'🇺🇸' if region=='미국' else '🇰🇷'} **{d['Name']}** | "
-                        f"매수 {f'${buy_p:,.2f}' if region=='미국' else f'{int(buy_p):,}원'} → "
-                        f"현재 {fmt_price(cur_p, region)} | "
-                        f"수익률 {'+' if pnl_pct>=0 else ''}{pnl_pct:.2f}% | {lt_verdict}",
-                        expanded=True
-                    ):
+                        st.write("최근 순수 매수 기록 없음 (매도·행사·자동매매만 감지됨)")
+                    if block["url"]:
                         st.markdown(
-                            f"<div style='background:{verdict_color};padding:10px;border-radius:8px;"
-                            f"font-size:16px;font-weight:bold;text-align:center;'>{lt_verdict}</div>",
+                            f"**[📄 SEC EDGAR Form 4 원문 보기 →]({block['url']})**\n\n",
                             unsafe_allow_html=True
                         )
-                        st.markdown("")
 
-                        c_left, c_right = st.columns(2)
-                        with c_left:
-                            st.markdown("**📋 펀더멘탈 체크 (11원칙)**")
-                            for item in fund_detail:
-                                st.markdown(f"- {item}")
-                            st.markdown(f"**→ 펀더멘탈 점수: {fund_score}/5**")
-                            
-                            st.markdown("")
-                            st.markdown("**💡 현금흐름 & 자본 효율성 (Quality)**")
-                            interp_text = get_cashflow_interpretation(d)
-                            for chunk in interp_text.split(" / "):
-                                st.markdown(f"- {chunk}")
-
-                        with c_right:
-                            st.markdown("**📡 기술·리스크 종합 신호**")
-                            for sig in hold_signals:
-                                st.markdown(f"- {sig}")
-                            st.markdown(f"- 시장대비 강도: {rs_txt}")
-                            st.markdown(f"- 종합 리스크: {risk_g}")
-                            st.markdown(f"- 매매 시그널: {ai_sig}")
-                            st.markdown(f"- 선행 성장성: 예상 성장률 {pct(d.get('Earnings_Growth'))} / Fwd PER {fmt(d.get('Forward_PER'), dig=1)}")
-
-                        news = d.get("Latest_News", "N/A")
-                        if news and news != "N/A":
-                            st.markdown(f"**📰 최신 뉴스:** {news[:100]}...")
-
-                        ne = d.get("Next_Earning", "N/A")
-                        if ne and ne != "N/A":
-                            try:
-                                days = (datetime.datetime.strptime(ne, "%Y-%m-%d") - datetime.datetime.now()).days
-                                if 0 <= days <= 30:
-                                    st.warning(f"📅 실적 발표 {days}일 후 ({ne}) — 발표 전후 변동성 확대 가능")
-                                else:
-                                    st.caption(f"📅 다음 실적 발표: {ne}")
-                            except:
-                                st.caption(f"📅 다음 실적 발표: {ne}")
-
-                st.markdown("---")
-                st.markdown("### 🤖 3. AI 전달용 장투 전략 리포트")
-                st.caption("아래 텍스트를 복사하여 챗봇에 붙여넣으면 더욱 완벽한 분석을 받을 수 있습니다.")
-
-                now_str = get_kst_now().strftime('%Y-%m-%d %H:%M KST')
-                port_lines = [
-                    f"[내 포트폴리오 장투 전략 분석 요청] ({now_str})",
-                    f"투자 기간 목표: 1~2년 (장기투자)",
-                    f"현재 시장: CNN F&G {cnn_score} ({cnn_rating}), SPY RSI {fmt(spy_rsi_val, dig=1)}",
-                    "",
-                    "【보유 종목 현황】",
-                ]
-                for d in port_data:
-                    buy_p  = d["BuyPrice"]
-                    cur_p  = d.get("Price")
-                    region = d["Region"]
-                    if cur_p is None: continue
-                    pnl_pct = round((float(cur_p) - buy_p) / buy_p * 100, 2)
-                    ai_sig  = get_ai_signal(d)
-                    risk_g  = d.get("Risk_Grade", "N/A")
-                    rsi14   = d.get("RSI_14")
-                    w52     = d.get("W52_pos")
-
-                    port_lines += [
-                        f"",
-                        f"▶ {d['Name']} ({region})",
-                        f"  - 매수가: {'$' if region=='미국' else ''}{buy_p:,.2f}{'원' if region=='한국' else ''}",
-                        f"  - 현재가: {fmt_price(cur_p, region)} | 수익률: {'+' if pnl_pct>=0 else ''}{pnl_pct:.2f}%",
-                        f"  - 펀더멘탈: 매출성장 {pct(d.get('Rev_Growth'))} | 매출총이익률 {pct(d.get('Gross_Margin'))} | 영업이익률 {pct(d.get('Op_Margin'))}",
-                        f"  - 자본/현금: ROIC {pct(d.get('ROIC'))} | ROE {pct(d.get('ROE'))} | FCF Yield {pct(d.get('FCF_Yield'))} | 자사주매입 {fmt_buyback(d.get('Buybacks'), d['Region'])}",
-                        f"  - 밸류에이션: PER {fmt(d.get('PER'),dig=1)} | Fwd PER {fmt(d.get('Forward_PER'),dig=1)} | PEG {fmt(d.get('PEG'),dig=2)} | PBR {fmt(d.get('PBR'),dig=2)}",
-                        f"  - 기술/리스크: RSI(14일) {fmt(rsi14,dig=1)} | 52주 위치 {w52}% | 리스크 {risk_g} | 내부자 {d.get('Insider_Buy','N/A')}",
-                        f"  - 어닝: {d.get('Earnings_Beat','N/A')} | 다음실적일: {d.get('Next_Earning','N/A')}",
-                    ]
-
-                port_lines += [
-                    "",
-                    "【장투 전략 분석 요청】",
-                    "위 보유 종목들에 대해 1~2년 장기투자 관점으로 다음을 심층 분석해 줘.",
-                    "",
-                    "1. [가치와 성장 듀얼 분석 (Turnaround & Bubble Check)]",
-                    "   - 각 종목의 '과거 영업이익률/PER'과 '미래 예상 이익성장률/Forward PER/PEG'를 교차 비교해 진짜 성장과 가짜 거품을 구별해 줘.",
-                    "",
-                    "2. [현금흐름 및 자본 효율성 (Quality Check)]",
-                    "   - FCF Yield, ROIC, 매출총이익률(Gross Margin)을 분석하여 기업의 실제 현금 창출력과 해자(Moat)를 평가해 줘.",
-                    "   - 경영진의 자신감을 나타내는 '자사주 매입' 내역과 '내부자 매수' 여부를 연계해 수급 안정성을 확인해 줘.",
-                    "",
-                    "3. [최종 매매 시나리오 제안]",
-                    "   - 현재 손실/수익률과 시장 상황(F&G, SPY RSI)을 종합하여 지금 당장 '적극 매수(물타기)', '관망(타점 대기)', '비중 축소' 해야 할 종목들을 분류하고 구체적인 액션 플랜을 제시해 줘."
-                ]
-
-                st.code("\n".join(port_lines), language="text")
-
-with tab5:
-    st.header("📖 11원칙 퀀트 매매 가이드라인 (오리지널 철학)")
-    st.markdown("""
-이 대시보드는 사용자님의 정통 가치투자 철학(위기 줍줍, 턴어라운드)과 기계적인 퀀트 필터링을 결합한 하이브리드 시스템입니다.
-
-**[ 펀더멘탈: 실적과 턴어라운드 ]**
-- **1원칙 (3개년 우상향):** 매출 and 영업이익 지속 상승.
-- **2원칙 (시가총액 비교):** 시장/섹터 대비 시총 규모가 적정하게 낮을 것.
-- **3원칙 (턴어라운드 기대):** 현재 마진이 낮아도 미래 개선이 뚜렷하면 투자 가능.
-- **4원칙 (비즈니스 모델):** 단독 매출인지, 연결/종속 업체인지 파악하고 시장 점유율 이해.
-
-**[ 투자 시계열과 위기 관리 ]**
-- **5원칙 (3년 장기 투자):** 수확은 3년 뒤. 일부만 현금화하여 재투자 비율 스스로 설정.
-- **6원칙 (글로벌 위기 줍줍):** 시장 붕괴 고점 대비 20~30% 하락 시 분할 매수, 50% 밑이면 과감히 매수.
-- **7원칙 (하락장 리밸런싱):** 시장 전체가 하락할 때 기존 비중 조절 및 신규 종목 편입.
-
-**[ 대가의 매매 집행 원칙 ]**
-- **8원칙 (오후 2시 반 타점):** 장중 변동성 노이즈를 피하기 위해 매수 결정은 오후 2시 30분 이후 종가 부근에서 내린다.
-- **9원칙 (장중 가짜 반등 경계):** 폭락장 중 일시적 반등은 속임수일 확률이 높으므로 종가 지지를 반드시 확인하고 분할 매수한다.
-- **10원칙 (포트폴리오 배분):** 개별 우량주 집중 리스크를 줄이기 위해 예산의 50%는 지수 ETF, 50%는 개별 우량주로 배분한다.
-- **11원칙 (바닥 퀀트 원칙 준수):** 감정을 배제하고 시스템이 제시하는 진바닥 스코어와 반등 신뢰도를 기계적으로 신뢰한다.
-    """)
-
-with tab_risk:
-    st.header("🚨 공매도 & 변동성(Beta) 종합 리스크 가이드")
-    st.markdown("""
-    | 공매도 비율 | Beta (변동성) | 종합 리스크 등급 및 해석 |
-    | :--- | :--- | :--- |
-    | 낮음 (5% 미만) | 낮음 (1.2 미만) | **🟢 안정형 — 방어적 투자에 적합** |
-    | 낮음 (5% 미만) | 높음 (1.2 이상) | **🟡 모멘텀형 — 상승장에 강하지만 하락 시 크게 빠짐** |
-    | 높음 (5% 이상) | 낮음 (1.2 미만) | **🟠 논란형 — 시장은 의심하지만 변동성은 낮음, 이유 확인 필요** |
-    | 높음 (5% 이상) | 높음 (1.2 이상) | **🔴 고위험 — 하락 베팅 + 큰 변동성, 진입 신중** |
-    """)
+        st.markdown("#### 💰 4. 단위경제 및 현금흐름 밸류에이션")
+        st.dataframe(pd.DataFrame(fin_rows).set_index("종목"), use_container_width=True)
+        
+        st.markdown("#### 💡 4-1. 단위경제 & 현금흐름 자동 해석 (워런 버핏의 시각)")
+        for d in all_data:
+            interpretation = get_cashflow_interpretation(d)
+            st.info(f"**{d['Name']}** : {interpretation}")
 
 with tab2:
     st.subheader("🌐 글로벌 매크로 및 시장 심리")
@@ -867,174 +711,6 @@ with tab2:
     else:
         st.warning("⚠️ CNN 서버 차단 중. 잠시 후 새로고침 해주세요.")
 
-with tab1:
-    st.subheader("🔍 관심 종목 스캔")
-    c1, c2 = st.columns(2)
-    us_input = c1.text_input("🇺🇸 미국 주식", "TSMC, 브로드컴, 버티브")
-    kr_input = c2.text_input("🇰🇷 한국 주식", "LS ELECTRIC")
-
-    queries = (
-        [("미국", q.strip()) for q in us_input.split(",") if q.strip()] +
-        [("한국", q.strip()) for q in kr_input.split(",") if q.strip()]
-    )
-
-    # 버튼 게이트: 다른 탭 위젯 조작으로 rerun될 때마다 무거운 API 호출이
-    # 자동 발생하는 것을 차단. 한 번 스캔하면 session_state로 유지.
-    if st.button("🔍 스캔 시작 (재무제표 교차 검증 포함)", type="primary", key="scan_btn"):
-        st.session_state["scan_requested"] = True
-
-    all_data, failed_queries = [], []
-    if st.session_state.get("scan_requested") and queries:
-        prog = st.progress(0.0, text="분석 준비 중...")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            futures = {executor.submit(get_stock_data, q, is_kr=(region == "한국"), fast_mode=False): (region, q) for region, q in queries}
-            for i, future in enumerate(concurrent.futures.as_completed(futures)):
-                region, q = futures[future]
-                prog.progress((i + 1) / len(queries), text=f"[{i+1}/{len(queries)}] '{q}' 데이터 수집 중...")
-                d = future.result()
-                d["Region"] = region
-                if not d.get("error"): all_data.append(d)
-                else: failed_queries.append(q)
-        prog.empty()
-    elif not st.session_state.get("scan_requested"):
-        st.info("종목을 입력하고 **스캔 시작** 버튼을 누르면 분석이 시작됩니다.")
-
-    if failed_queries:
-        st.warning(f"⚠️ 데이터 조회 실패 (오타 확인): {', '.join(failed_queries)}")
-
-    if all_data:
-        signal_rows, tech_rows, fin_rows, risk_rows = [], [], [], []
-        insider_blocks = []
-
-        for d in all_data:
-            ai_sig = get_ai_signal(d)
-            tb_sig = get_tenbagger_signal(d)
-            target_p, target_desc = calculate_smart_target(d, ai_sig)
-            curr_price_str = fmt_price(d.get("Price"), d["Region"])
-            target_str     = "-" if target_p == "-" else fmt_price(target_p, d["Region"])
-
-            signal_rows.append({
-                "종목":        d["Name"],
-                "장투 시그널": ai_sig,
-                "💡 타점":     f"{target_desc} ({target_str})",
-                "현재가":      curr_price_str,
-                "등락률":      fmt_change(d.get("Change")),
-                "시가총액":    fmt_mcap(d.get("MarketCap"), d["Region"]),
-            })
-
-            rs_txt = relative_strength_label(d.get("RSI_14"), spy_rsi_val)
-
-            w52_pos = d.get("W52_pos")
-            if w52_pos is not None:
-                if w52_pos <= 15:   pos_label = f"📍 {w52_pos}% (52주 바닥권)"
-                elif w52_pos <= 30: pos_label = f"📍 {w52_pos}% (하단 30%)"
-                elif w52_pos >= 85: pos_label = f"📍 {w52_pos}% (고점권)"
-                elif w52_pos >= 70: pos_label = f"📍 {w52_pos}% (상단 30%)"
-                else:               pos_label = f"📍 {w52_pos}% (중간권)"
-            else:
-                pos_label = "N/A"
-
-            tech_rows.append({
-                "종목":           d["Name"],
-                "시장대비 강도":  rs_txt,
-                "52주 위치":      pos_label,
-                "고점 대비":      fmt(d.get("Gap_High"), "%", dig=1),
-                "RSI(7일)":      fmt(d.get("RSI_7"),  dig=1),
-                "RSI(14일)":     fmt(d.get("RSI_14"), dig=1),
-                "RSI(21일)":     fmt(d.get("RSI_21"), dig=1),
-                "MACD":          d.get("MACD_dir", "N/A"),
-                "거래강도":       fmt(d.get("Vol_ratio"), "%", dig=1),
-                "20일 이격":      fmt(d.get("MA20_gap"), "%", dig=1),
-            })
-
-            fin_rows.append({
-                "종목":          d["Name"],
-                "Rule of 40":    fmt(d.get("Rule_of_40"), "%", dig=1) if d.get("Rule_of_40") is not None else "N/A",
-                "EV/EBITDA":     fmt(d.get("EV_EBITDA"), "x", dig=1),
-                "EV/FCF":        fmt(d.get("EV_FCF"), "x", dig=1),
-                "매출총이익률":  pct(d.get("Gross_Margin")),
-                "영업이익률":    pct(d.get("Op_Margin")),
-                "ROIC":          pct(d.get("ROIC")),
-                "FCF Yield":     pct(d.get("FCF_Yield")),
-                "FCF/Share":     fmt(d.get("FCFPS"), pfx="$" if d["Region"] == "미국" else "₩", dig=2),
-                "자사주 매입":   fmt_buyback(d.get("Buybacks"), d["Region"]),
-                "Forward PER":   fmt(d.get("Forward_PER"), dig=1),
-                "PEG":           fmt(d.get("PEG"), dig=2),
-            })
-
-            risk_rows.append({
-                "종목":            d["Name"],
-                "종합 리스크 등급": d.get("Risk_Grade", "N/A"),
-                "다음 실적일":     d.get("Next_Earning", "N/A"),
-                "내부자 매수":     d.get("Insider_Buy",  "N/A"),
-                "어닝 서프라이즈 (최근 8Q)": d.get("Earnings_Beat","N/A"),
-                "공매도 비율":     d.get("Short_Interest","N/A"),
-                "Beta":           d.get("Beta",          "N/A"),
-                "최신 헤드라인":   (str(d.get("Latest_News",""))[:50]+"...") if len(str(d.get("Latest_News",""))) > 50 else d.get("Latest_News","N/A"),
-            })
-
-            if d.get("Insider_Buy") == "🟢 매수 기록 있음" and d.get("Insider_Detail"):
-                insider_blocks.append({
-                    "name":   d["Name"],
-                    "detail": d["Insider_Detail"],
-                    "url":    d.get("Edgar_URL", ""),
-                })
-            elif d.get("Edgar_URL"):
-                insider_blocks.append({
-                    "name":   d["Name"],
-                    "detail": "",
-                    "url":    d.get("Edgar_URL", ""),
-                })
-
-        st.markdown("#### 🎯 1. 11원칙 매매 시그널 & 눌림목 타점")
-        st.dataframe(
-            pd.DataFrame(signal_rows).set_index("종목").style.map(color_df),
-            use_container_width=True
-        )
-
-        st.markdown("#### 📈 2. 기술적 지표 (상대강도 + 멀티RSI + 52주 위치)")
-        st.dataframe(
-            pd.DataFrame(tech_rows).set_index("종목").style.map(
-                color_df, subset=["시장대비 강도","고점 대비","거래강도","20일 이격"]
-            ),
-            use_container_width=True
-        )
-        st.caption(
-            "💡 **시장대비 강도**: SPY ETF RSI(14일)와 비교. 양수 = 시장보다 강함. "
-            "| **52주 위치**: 0% = 52주 최저, 100% = 최고. "
-            "| **고점 대비**: 52주 고점에서 얼마나 내려왔는지 (음수)."
-        )
-
-        st.markdown("#### 🚨 3. 리스크 관리 (종합 등급 · 실적일 · 내부자 · 공매도 · Beta · 뉴스)")
-        st.dataframe(
-            pd.DataFrame(risk_rows).set_index("종목").style.map(
-                color_df, subset=["종합 리스크 등급", "내부자 매수"]
-            ),
-            use_container_width=True
-        )
-
-        if insider_blocks:
-            st.markdown("#### 🔗 내부자 거래 상세 & SEC EDGAR 원문 링크")
-            for block in insider_blocks:
-                with st.expander(f"📋 {block['name']} — 내부자 거래 상세"):
-                    if block["detail"]:
-                        st.info(block["detail"])
-                    else:
-                        st.write("최근 순수 매수 기록 없음 (매도·행사·자동매매만 감지됨)")
-                    if block["url"]:
-                        st.markdown(
-                            f"**[📄 SEC EDGAR Form 4 원문 보기 →]({block['url']})**\n\n",
-                            unsafe_allow_html=True
-                        )
-
-        st.markdown("#### 💰 4. 단위경제 및 현금흐름 밸류에이션")
-        st.dataframe(pd.DataFrame(fin_rows).set_index("종목"), use_container_width=True)
-        
-        st.markdown("#### 💡 4-1. 단위경제 & 현금흐름 자동 해석 (워런 버핏의 시각)")
-        for d in all_data:
-            interpretation = get_cashflow_interpretation(d)
-            st.info(f"**{d['Name']}** : {interpretation}")
-
 with tab4:
     st.subheader("🚀 섹터별 텐배거 마스터 레이더 (미래 지표 및 트렌드 필터)")
     UNIVERSE = {
@@ -1191,3 +867,327 @@ with tab3:
         "   - 현재 시장 심리(F&G, SPY RSI)를 바탕으로 지금 당장 '적극 매수', '관망', '비중 축소' 해야 할 종목들을 분류하고 구체적인 액션 플랜을 제시해 줘."
     ]
     st.code("\n".join(lines), language="text")
+with tab_port:
+    st.subheader("💼 내 포트폴리오 장투 전략 분석 (1~2년 기준)")
+    st.caption("보유 종목과 매수가를 입력하면 현재 손익 현황 + 11원칙 종합평가 + AI 전달용 장투 전략 리포트를 생성합니다.")
+
+    st.markdown("#### 📝 보유 종목 입력")
+    st.info(
+        "**입력 형식:** 종목명:매수가 (쉼표로 구분)\n\n"
+        "🇺🇸 미국: `브로드컴:320.5, 버티브:250, TSMC:180`\n\n"
+        "🇰🇷 한국: `LS ELECTRIC:185000, 피에스케이홀딩스:120000`"
+    )
+
+    col_us, col_kr = st.columns(2)
+    port_us_raw = col_us.text_input("🇺🇸 미국 보유 종목 (달러 매수가)", "브로드컴:320.5, 버티브:250, TSMC:180")
+    port_kr_raw = col_kr.text_input("🇰🇷 한국 보유 종목 (원화 매수가)", "LS ELECTRIC:185000")
+
+    def parse_portfolio_input(raw: str, region: str):
+        items = []
+        for chunk in raw.split(","):
+            chunk = chunk.strip()
+            if ":" not in chunk:
+                continue
+            parts = chunk.rsplit(":", 1)
+            if len(parts) == 2:
+                name = parts[0].strip()
+                try:
+                    price = float(parts[1].strip().replace(",", ""))
+                    items.append((name, price, region))
+                except ValueError:
+                    pass
+        return items
+
+    port_items = (
+        parse_portfolio_input(port_us_raw, "미국") +
+        parse_portfolio_input(port_kr_raw, "한국")
+    )
+
+    if st.button("🔍 장투 전략 분석 시작", type="primary"):
+        if not port_items:
+            st.warning("종목을 올바른 형식으로 입력해 주세요.")
+        else:
+            port_data = []
+            prog = st.progress(0.0, text="보유 종목 데이터 수집 준비 중...")
+            for i, (name, buy_price, region) in enumerate(port_items):
+                prog.progress((i + 1) / len(port_items), text=f"[{i+1}/{len(port_items)}] '{name}' 재무제표 교차 검증 중...")
+                d = get_stock_data(name, is_kr=(region == "한국"), fast_mode=False)
+                d["Region"]    = region
+                d["BuyPrice"]  = buy_price
+                if not d.get("error"):
+                    port_data.append(d)
+                else:
+                    st.warning(f"⚠️ '{name}' 데이터 조회 실패: {d.get('error')}")
+            prog.empty()
+
+            if not port_data:
+                st.error("조회된 종목이 없습니다. 종목명을 확인해 주세요.")
+            else:
+                st.markdown("---")
+                st.markdown("### 📊 1. 현재 손익 현황")
+
+                pnl_rows = []
+                for d in port_data:
+                    buy_p   = d["BuyPrice"]
+                    cur_p   = d.get("Price")
+                    region  = d["Region"]
+                    if cur_p is None:
+                        continue
+                    cur_p_f = float(cur_p)
+                    pnl_pct = round((cur_p_f - buy_p) / buy_p * 100, 2)
+                    pnl_sign = "+" if pnl_pct >= 0 else ""
+
+                    ma20    = d.get("MA20")
+                    bb_low  = d.get("BB_lower")
+
+                    def _dist(ref):
+                        if ref is None: return "N/A"
+                        return f"{round((cur_p_f - float(ref)) / float(ref) * 100, 1):+.1f}%"
+
+                    pnl_rows.append({
+                        "종목":        d["Name"],
+                        "지역":        "🇺🇸" if region == "미국" else "🇰🇷",
+                        "매수가":      f"${buy_p:,.2f}" if region == "미국" else f"{int(buy_p):,}원",
+                        "현재가":      fmt_price(cur_p, region),
+                        "수익률":      f"{pnl_sign}{pnl_pct:.2f}%",
+                        "20일선 위치": _dist(ma20),
+                        "볼밴 하단까지": _dist(bb_low),
+                        "52주 위치":   f"{d.get('W52_pos', 'N/A')}%",
+                    })
+
+                pnl_df = pd.DataFrame(pnl_rows).set_index("종목")
+
+                def color_pnl(val):
+                    if isinstance(val, str) and val.endswith('%') and (val.startswith('+') or val.startswith('-') or (val[0].isdigit())):
+                        try:
+                            num = float(val.replace('%','').replace('+',''))
+                            if num > 0:   return 'color: #ff4b4b; font-weight: bold'
+                            elif num < 0: return 'color: #0068c9; font-weight: bold'
+                        except: pass
+                    return ''
+
+                st.dataframe(pnl_df.style.map(color_pnl, subset=["수익률","20일선 위치","볼밴 하단까지"]), use_container_width=True)
+
+                st.markdown("---")
+                st.markdown("### 🧭 2. 종목별 종합 분석")
+
+                for d in port_data:
+                    buy_p   = d["BuyPrice"]
+                    cur_p   = d.get("Price")
+                    region  = d["Region"]
+                    if cur_p is None: continue
+
+                    cur_p_f  = float(cur_p)
+                    pnl_pct  = round((cur_p_f - buy_p) / buy_p * 100, 2)
+                    ai_sig   = get_ai_signal(d)
+                    tb_sig   = get_tenbagger_signal(d) 
+                    rs_txt   = relative_strength_label(d.get("RSI_14"), spy_rsi_val)
+                    risk_g   = d.get("Risk_Grade", "N/A")
+                    rsi14    = d.get("RSI_14")
+                    w52      = d.get("W52_pos")
+
+                    fund_score = 0
+                    fund_detail = []
+                    rev_g  = d.get("Rev_Growth") or 0
+                    op_m   = d.get("Op_Margin")  or 0
+                    roe_v  = d.get("ROE")         or 0
+                    peg_v  = d.get("PEG")         or 99
+                    per_v  = d.get("PER")
+                    
+                    gap_high = float(d.get("Gap_High") or 0)
+                    is_turnaround = d.get("Is_Turnaround", False)
+
+                    if float(rev_g) >= 0.20:
+                        fund_score += 1; fund_detail.append("✅ 매출성장 20%↑")
+                    else:
+                        fund_detail.append(f"❌ 매출성장 미달 ({pct(rev_g)})")
+
+                    if float(op_m) >= 0.10:
+                        fund_score += 1; fund_detail.append("✅ 영업이익률 10%↑")
+                    else:
+                        if is_turnaround:
+                            fund_score += 1; fund_detail.append("🔄 흑자전환 기대 (Forward EPS 턴어라운드)")
+                        else:
+                            fund_detail.append(f"❌ 영업이익률 미달 ({pct(op_m)})")
+
+                    if float(roe_v) >= 0.05:
+                        fund_score += 1; fund_detail.append("✅ ROE 5%↑")
+                    else:
+                        fund_detail.append(f"❌ ROE 미달 ({pct(roe_v)})")
+
+                    if 0 < float(peg_v) <= 1.5:
+                        fund_score += 1; fund_detail.append(f"✅ PEG {float(peg_v):.2f} (저평가)")
+                    else:
+                        fund_detail.append(f"⚠️ PEG {fmt(peg_v, dig=2)} (고평가 or N/A)")
+
+                    if per_v and float(per_v) < 30:
+                        fund_score += 1; fund_detail.append(f"✅ PER {float(per_v):.1f} (합리적)")
+                    else:
+                        fund_detail.append(f"⚠️ PER {fmt(per_v, dig=1)} (높음 or N/A)")
+
+                    hold_signals = []
+                    if fund_score >= 4: hold_signals.append("💎 펀더멘탈 우수")
+                    elif fund_score >= 2: hold_signals.append("⚠️ 펀더멘탈 보통")
+                    else: hold_signals.append("🚨 펀더멘탈 약함")
+
+                    if rsi14 and float(rsi14) < 45: hold_signals.append("🔥 기술적 저점 구간")
+                    elif rsi14 and float(rsi14) > 70: hold_signals.append("⚠️ 기술적 과매수")
+
+                    if w52 and float(w52) <= 30: hold_signals.append("📍 52주 하단권 (매수 기회)")
+                    
+                    if gap_high < -30.0 and cnn_score is not None and cnn_score <= 25:
+                        hold_signals.append("🚨 위기 투매 발생 (11원칙 낙폭 과대 줍줍 구간)")
+
+                    if d.get("Insider_Buy") == "🟢 매수 기록 있음": hold_signals.append("🟢 내부자 매수 확인")
+
+                    if pnl_pct >= 20: hold_signals.append("💰 수익 구간 (일부 익절 고려)")
+                    elif pnl_pct <= -15: hold_signals.append("🔻 손실 구간 (손절 or 물타기 검토)")
+
+                    if fund_score >= 3 and (rsi14 is None or float(rsi14) < 70):
+                        lt_verdict = "🟢 장투 유지 적합"
+                        verdict_color = "#ccffcc"
+                    elif fund_score >= 2 and pnl_pct > -20:
+                        lt_verdict = "🟡 조건부 유지 (펀더멘탈 모니터링 필요)"
+                        verdict_color = "#fff9cc"
+                    else:
+                        lt_verdict = "🔴 재검토 필요 (펀더멘탈 약화 or 손실 심화)"
+                        verdict_color = "#ffdddd"
+
+                    with st.expander(
+                        f"{'🇺🇸' if region=='미국' else '🇰🇷'} **{d['Name']}** | "
+                        f"매수 {f'${buy_p:,.2f}' if region=='미국' else f'{int(buy_p):,}원'} → "
+                        f"현재 {fmt_price(cur_p, region)} | "
+                        f"수익률 {'+' if pnl_pct>=0 else ''}{pnl_pct:.2f}% | {lt_verdict}",
+                        expanded=True
+                    ):
+                        st.markdown(
+                            f"<div style='background:{verdict_color};padding:10px;border-radius:8px;"
+                            f"font-size:16px;font-weight:bold;text-align:center;'>{lt_verdict}</div>",
+                            unsafe_allow_html=True
+                        )
+                        st.markdown("")
+
+                        c_left, c_right = st.columns(2)
+                        with c_left:
+                            st.markdown("**📋 펀더멘탈 체크 (11원칙)**")
+                            for item in fund_detail:
+                                st.markdown(f"- {item}")
+                            st.markdown(f"**→ 펀더멘탈 점수: {fund_score}/5**")
+                            
+                            st.markdown("")
+                            st.markdown("**💡 현금흐름 & 자본 효율성 (Quality)**")
+                            interp_text = get_cashflow_interpretation(d)
+                            for chunk in interp_text.split(" / "):
+                                st.markdown(f"- {chunk}")
+
+                        with c_right:
+                            st.markdown("**📡 기술·리스크 종합 신호**")
+                            for sig in hold_signals:
+                                st.markdown(f"- {sig}")
+                            st.markdown(f"- 시장대비 강도: {rs_txt}")
+                            st.markdown(f"- 종합 리스크: {risk_g}")
+                            st.markdown(f"- 매매 시그널: {ai_sig}")
+                            st.markdown(f"- 선행 성장성: 예상 성장률 {pct(d.get('Earnings_Growth'))} / Fwd PER {fmt(d.get('Forward_PER'), dig=1)}")
+
+                        news = d.get("Latest_News", "N/A")
+                        if news and news != "N/A":
+                            st.markdown(f"**📰 최신 뉴스:** {news[:100]}...")
+
+                        ne = d.get("Next_Earning", "N/A")
+                        if ne and ne != "N/A":
+                            try:
+                                days = (datetime.datetime.strptime(ne, "%Y-%m-%d") - datetime.datetime.now()).days
+                                if 0 <= days <= 30:
+                                    st.warning(f"📅 실적 발표 {days}일 후 ({ne}) — 발표 전후 변동성 확대 가능")
+                                else:
+                                    st.caption(f"📅 다음 실적 발표: {ne}")
+                            except:
+                                st.caption(f"📅 다음 실적 발표: {ne}")
+
+                st.markdown("---")
+                st.markdown("### 🤖 3. AI 전달용 장투 전략 리포트")
+                st.caption("아래 텍스트를 복사하여 챗봇에 붙여넣으면 더욱 완벽한 분석을 받을 수 있습니다.")
+
+                now_str = get_kst_now().strftime('%Y-%m-%d %H:%M KST')
+                port_lines = [
+                    f"[내 포트폴리오 장투 전략 분석 요청] ({now_str})",
+                    f"투자 기간 목표: 1~2년 (장기투자)",
+                    f"현재 시장: CNN F&G {cnn_score} ({cnn_rating}), SPY RSI {fmt(spy_rsi_val, dig=1)}",
+                    "",
+                    "【보유 종목 현황】",
+                ]
+                for d in port_data:
+                    buy_p  = d["BuyPrice"]
+                    cur_p  = d.get("Price")
+                    region = d["Region"]
+                    if cur_p is None: continue
+                    pnl_pct = round((float(cur_p) - buy_p) / buy_p * 100, 2)
+                    ai_sig  = get_ai_signal(d)
+                    risk_g  = d.get("Risk_Grade", "N/A")
+                    rsi14   = d.get("RSI_14")
+                    w52     = d.get("W52_pos")
+
+                    port_lines += [
+                        f"",
+                        f"▶ {d['Name']} ({region})",
+                        f"  - 매수가: {'$' if region=='미국' else ''}{buy_p:,.2f}{'원' if region=='한국' else ''}",
+                        f"  - 현재가: {fmt_price(cur_p, region)} | 수익률: {'+' if pnl_pct>=0 else ''}{pnl_pct:.2f}%",
+                        f"  - 펀더멘탈: 매출성장 {pct(d.get('Rev_Growth'))} | 매출총이익률 {pct(d.get('Gross_Margin'))} | 영업이익률 {pct(d.get('Op_Margin'))}",
+                        f"  - 자본/현금: ROIC {pct(d.get('ROIC'))} | ROE {pct(d.get('ROE'))} | FCF Yield {pct(d.get('FCF_Yield'))} | 자사주매입 {fmt_buyback(d.get('Buybacks'), d['Region'])}",
+                        f"  - 밸류에이션: PER {fmt(d.get('PER'),dig=1)} | Fwd PER {fmt(d.get('Forward_PER'),dig=1)} | PEG {fmt(d.get('PEG'),dig=2)} | PBR {fmt(d.get('PBR'),dig=2)}",
+                        f"  - 기술/리스크: RSI(14일) {fmt(rsi14,dig=1)} | 52주 위치 {w52}% | 리스크 {risk_g} | 내부자 {d.get('Insider_Buy','N/A')}",
+                        f"  - 어닝: {d.get('Earnings_Beat','N/A')} | 다음실적일: {d.get('Next_Earning','N/A')}",
+                    ]
+
+                port_lines += [
+                    "",
+                    "【장투 전략 분석 요청】",
+                    "위 보유 종목들에 대해 1~2년 장기투자 관점으로 다음을 심층 분석해 줘.",
+                    "",
+                    "1. [가치와 성장 듀얼 분석 (Turnaround & Bubble Check)]",
+                    "   - 각 종목의 '과거 영업이익률/PER'과 '미래 예상 이익성장률/Forward PER/PEG'를 교차 비교해 진짜 성장과 가짜 거품을 구별해 줘.",
+                    "",
+                    "2. [현금흐름 및 자본 효율성 (Quality Check)]",
+                    "   - FCF Yield, ROIC, 매출총이익률(Gross Margin)을 분석하여 기업의 실제 현금 창출력과 해자(Moat)를 평가해 줘.",
+                    "   - 경영진의 자신감을 나타내는 '자사주 매입' 내역과 '내부자 매수' 여부를 연계해 수급 안정성을 확인해 줘.",
+                    "",
+                    "3. [최종 매매 시나리오 제안]",
+                    "   - 현재 손실/수익률과 시장 상황(F&G, SPY RSI)을 종합하여 지금 당장 '적극 매수(물타기)', '관망(타점 대기)', '비중 축소' 해야 할 종목들을 분류하고 구체적인 액션 플랜을 제시해 줘."
+                ]
+
+                st.code("\n".join(port_lines), language="text")
+
+with tab5:
+    st.header("📖 11원칙 퀀트 매매 가이드라인 (오리지널 철학)")
+    st.markdown("""
+이 대시보드는 사용자님의 정통 가치투자 철학(위기 줍줍, 턴어라운드)과 기계적인 퀀트 필터링을 결합한 하이브리드 시스템입니다.
+
+**[ 펀더멘탈: 실적과 턴어라운드 ]**
+- **1원칙 (3개년 우상향):** 매출 and 영업이익 지속 상승.
+- **2원칙 (시가총액 비교):** 시장/섹터 대비 시총 규모가 적정하게 낮을 것.
+- **3원칙 (턴어라운드 기대):** 현재 마진이 낮아도 미래 개선이 뚜렷하면 투자 가능.
+- **4원칙 (비즈니스 모델):** 단독 매출인지, 연결/종속 업체인지 파악하고 시장 점유율 이해.
+
+**[ 투자 시계열과 위기 관리 ]**
+- **5원칙 (3년 장기 투자):** 수확은 3년 뒤. 일부만 현금화하여 재투자 비율 스스로 설정.
+- **6원칙 (글로벌 위기 줍줍):** 시장 붕괴 고점 대비 20~30% 하락 시 분할 매수, 50% 밑이면 과감히 매수.
+- **7원칙 (하락장 리밸런싱):** 시장 전체가 하락할 때 기존 비중 조절 및 신규 종목 편입.
+
+**[ 대가의 매매 집행 원칙 ]**
+- **8원칙 (오후 2시 반 타점):** 장중 변동성 노이즈를 피하기 위해 매수 결정은 오후 2시 30분 이후 종가 부근에서 내린다.
+- **9원칙 (장중 가짜 반등 경계):** 폭락장 중 일시적 반등은 속임수일 확률이 높으므로 종가 지지를 반드시 확인하고 분할 매수한다.
+- **10원칙 (포트폴리오 배분):** 개별 우량주 집중 리스크를 줄이기 위해 예산의 50%는 지수 ETF, 50%는 개별 우량주로 배분한다.
+- **11원칙 (바닥 퀀트 원칙 준수):** 감정을 배제하고 시스템이 제시하는 진바닥 스코어와 반등 신뢰도를 기계적으로 신뢰한다.
+    """)
+
+with tab_risk:
+    st.header("🚨 공매도 & 변동성(Beta) 종합 리스크 가이드")
+    st.markdown("""
+    | 공매도 비율 | Beta (변동성) | 종합 리스크 등급 및 해석 |
+    | :--- | :--- | :--- |
+    | 낮음 (5% 미만) | 낮음 (1.2 미만) | **🟢 안정형 — 방어적 투자에 적합** |
+    | 낮음 (5% 미만) | 높음 (1.2 이상) | **🟡 모멘텀형 — 상승장에 강하지만 하락 시 크게 빠짐** |
+    | 높음 (5% 이상) | 낮음 (1.2 미만) | **🟠 논란형 — 시장은 의심하지만 변동성은 낮음, 이유 확인 필요** |
+    | 높음 (5% 이상) | 높음 (1.2 이상) | **🔴 고위험 — 하락 베팅 + 큰 변동성, 진입 신중** |
+    """)
+
