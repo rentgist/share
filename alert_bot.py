@@ -14,15 +14,17 @@ TARGET_STOCK_TICKER = "AVGO"
 TARGET_AI_SIGNALS = ["🔥 바닥 줍줍 (적극매수)", "🛒 분할매수 시작"] # 이 시그널이 뜰 때 알림
 
 def send_telegram_alert(token, chat_id, message):
-    """텔레그램 메시지 전송 (Markdown 파싱)"""
+    """텔레그램 메시지 전송 (HTML 파싱)"""
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
         "chat_id": chat_id,
         "text": message,
-        "parse_mode": "Markdown"
+        "parse_mode": "HTML"
     }
     try:
         response = requests.post(url, json=payload, timeout=10)
+        if response.status_code != 200:
+            print(f"❌ 텔레그램 오류 상세: {response.text}")
         response.raise_for_status()
         print("✅ 텔레그램 알림 발송 성공")
     except Exception as e:
@@ -50,14 +52,14 @@ def run_alert_logic():
         us_score, us_verdict, _, _ = calculate_us_bottom_finder(charts["SPY"], charts["^VIX"], cnn_score)
         print(f"🇺🇸 미국 바닥 점수: {us_score}점")
         if us_score >= SCORE_THRESHOLD:
-            msg = f"🚨 **[미국 증시 진바닥 포착]** 🚨\n* **점수**: `{us_score}점`\n* **상태**: {us_verdict}\n* **조치**: 현금 투입(스나이퍼) 조건을 확인하세요."
+            msg = f"🚨 <b>[미국 증시 진바닥 포착]</b> 🚨\n* <b>점수</b>: <code>{us_score}점</code>\n* <b>상태</b>: {us_verdict}\n* <b>조치</b>: 현금 투입(스나이퍼) 조건을 확인하세요."
             messages.append(msg)
             
     if charts and "KS11" in charts and "^VKOSPI" in charts and "USDKRW=X" in charts:
         kr_score, kr_verdict, _, _ = calculate_kr_bottom_finder(charts["KS11"], charts["^VKOSPI"], charts["USDKRW=X"])
         print(f"🇰🇷 한국 바닥 점수: {kr_score}점")
         if kr_score >= SCORE_THRESHOLD:
-            msg = f"🚨 **[한국 증시 진바닥 포착]** 🚨\n* **점수**: `{kr_score}점`\n* **상태**: {kr_verdict}\n* **조치**: 현금 투입(스나이퍼) 조건을 확인하세요."
+            msg = f"🚨 <b>[한국 증시 진바닥 포착]</b> 🚨\n* <b>점수</b>: <code>{kr_score}점</code>\n* <b>상태</b>: {kr_verdict}\n* <b>조치</b>: 현금 투입(스나이퍼) 조건을 확인하세요."
             messages.append(msg)
 
     # 3. 개별 타겟 종목 감시 (AI 시그널)
@@ -72,12 +74,12 @@ def run_alert_logic():
             close_price = d.get('Close', 0)
             rsi = d.get('RSI', 0)
             msg = (
-                f"🎯 **[타겟 종목 시그널 포착]** 🎯\n"
-                f"**종목**: {TARGET_STOCK_NAME} ({TARGET_STOCK_TICKER})\n"
-                f"**현재가**: ${close_price:.2f}\n"
-                f"**RSI**: {rsi:.1f}\n"
-                f"**시그널**: `{ai_sig}`\n"
-                f"**코멘트**: 설정된 매수 시그널이 감지되었습니다."
+                f"🎯 <b>[타겟 종목 시그널 포착]</b> 🎯\n"
+                f"<b>종목</b>: {TARGET_STOCK_NAME} ({TARGET_STOCK_TICKER})\n"
+                f"<b>현재가</b>: ${close_price:.2f}\n"
+                f"<b>RSI</b>: {rsi:.1f}\n"
+                f"<b>시그널</b>: <code>{ai_sig}</code>\n"
+                f"<b>코멘트</b>: 설정된 매수 시그널이 감지되었습니다."
             )
             messages.append(msg)
     else:
@@ -85,17 +87,17 @@ def run_alert_logic():
 
     # 4. 종합 알림 발송
     if messages:
-        final_message = "🔔 **[11원칙 퀀트 에이전트 긴급 보고]** 🔔\n\n" + "\n\n---\n\n".join(messages)
+        final_message = "🔔 <b>[11원칙 퀀트 에이전트 긴급 보고]</b> 🔔\n\n" + "\n\n---\n\n".join(messages)
     else:
         # 조건 미달이어도 테스트 및 상태 확인용으로 요약 메시지 전송
         us_s = us_score if 'us_score' in locals() else "N/A"
         kr_s = kr_score if 'kr_score' in locals() else "N/A"
         final_message = (
-            f"💤 **[11원칙 퀀트 에이전트 정기 보고]**\n"
+            f"💤 <b>[11원칙 퀀트 에이전트 정기 보고]</b>\n"
             f"임계치({SCORE_THRESHOLD}점)를 넘는 특이사항이 없습니다.\n\n"
-            f"📊 **현재 진바닥 점수**\n"
-            f"🇺🇸 미국: `{us_s}점`\n"
-            f"🇰🇷 한국: `{kr_s}점`"
+            f"📊 <b>현재 진바닥 점수</b>\n"
+            f"🇺🇸 미국: <code>{us_s}점</code>\n"
+            f"🇰🇷 한국: <code>{kr_s}점</code>"
         )
         print("💤 임계치 미달. 요약 상태를 전송합니다.")
 
