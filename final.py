@@ -725,7 +725,7 @@ with tab2:
                 st.warning("미국장 백테스트에 필요한 10년치 데이터가 부족합니다.")
 
         with tab_kr_bt:
-            bt_kr = run_kr_historical_backtest(kospi_10y, vkospi_10y, usdkrw_10y)
+            bt_kr = run_kr_historical_backtest(kospi_10y, vkospi_10y, usd_krw)
             if bt_kr:
                 st.markdown("**📌 주요 시장 이벤트에서의 바닥 탐지 점수 (한국장)**")
                 ev_cols = st.columns(len(bt_kr["주요 이벤트 점수"]))
