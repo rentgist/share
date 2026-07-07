@@ -1,0 +1,37 @@
+name: Quant Alert Bot
+
+on:
+  schedule:
+    # UTC 기준입니다. (한국 시간 = UTC + 9)
+    # 아래 설정은 한국 시간 기준 매일 오전 6시(미장 마감 직후)와 오후 3시 20분(한국장 마감 직전)에 실행됩니다.
+    - cron: '0 21 * * *'  # KST 06:00 (UTC 21:00)
+    - cron: '20 6 * * *'  # KST 15:20 (UTC 06:20)
+  
+  workflow_dispatch:
+    # GitHub 사이트에서 수동으로 실행(Run workflow) 버튼을 누를 수 있게 해줍니다.
+
+jobs:
+  run-alert-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 저장소 코드 불러오기 (Checkout)
+        uses: actions/checkout@v3
+
+      - name: Python 3.9 환경 설정
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: 필요한 패키지 설치
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 봇 실행 및 알림 발송
+        env:
+          # 깃허브 시크릿에 저장한 키를 스크립트 환경변수로 전달합니다.
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python alert_bot.py
