@@ -84,13 +84,18 @@ def run_alert_logic():
     us_score = kr_score = "N/A"
     us_verdict = kr_verdict = "N/A"
     
+    market_summary = ""
+    market_details = ""
+    
     if charts and "SPY" in charts and "^VIX" in charts:
         us_score, us_verdict, _, us_phase = calculate_us_bottom_finder(charts["SPY"], charts["^VIX"], cnn_score)
         print(f"🇺🇸 미국 바닥 점수: {us_score}점")
         alert_msg = get_market_alert(us_score, us_verdict, "미국 증시")
         if alert_msg:
             summary_messages.append(alert_msg)
-            detailed_messages.append(f"[미국 증시 매크로]\n- 국면: {us_phase}\n- 진바닥 점수: {us_score}\n- CNN F&G: {cnn_score} ({cnn_rating})")
+        
+        market_summary += f"🇺🇸 미국: {us_score}점 ({us_phase})\n"
+        market_details += f"[미국 증시 매크로]\n- 국면: {us_phase}\n- 진바닥 점수: {us_score}\n- CNN F&G: {cnn_score} ({cnn_rating})\n\n"
             
     if charts and "KS11" in charts and "^VKOSPI" in charts and "USDKRW=X" in charts:
         kr_score, kr_verdict, _, kr_phase = calculate_kr_bottom_finder(charts["KS11"], charts["^VKOSPI"], charts["USDKRW=X"])
@@ -98,7 +103,9 @@ def run_alert_logic():
         alert_msg = get_market_alert(kr_score, kr_verdict, "한국 증시")
         if alert_msg:
             summary_messages.append(alert_msg)
-            detailed_messages.append(f"[한국 증시 매크로]\n- 국면: {kr_phase}\n- 진바닥 점수: {kr_score}")
+            
+        market_summary += f"🇰🇷 한국: {kr_score}점 ({kr_phase})\n"
+        market_details += f"[한국 증시 매크로]\n- 국면: {kr_phase}\n- 진바닥 점수: {kr_score}\n\n"
 
     # 2. 핵심 타겟 종목 스캔
     print(f"🎯 핵심 타겟 종목 ({len(TARGET_STOCKS)}개) 감시 중...")
@@ -175,6 +182,7 @@ def run_alert_logic():
         final_message += "━━━━━━━━━━━━━━━━━━━━\n"
         final_message += "💡 <b>[요약본 (Quick Summary)]</b>\n"
         final_message += "━━━━━━━━━━━━━━━━━━━━\n"
+        final_message += f"📊 <b>전체 시장 상태</b>\n{market_summary}\n"
         final_message += "\n\n".join(summary_messages)
         
         final_message += "\n\n━━━━━━━━━━━━━━━━━━━━\n"
@@ -182,6 +190,7 @@ def run_alert_logic():
         final_message += "<i>아래 내용을 복사하여 ChatGPT나 Claude에게 보내세요.</i>\n"
         final_message += "━━━━━━━━━━━━━━━━━━━━\n"
         final_message += "<code>다음 퀀트 데이터를 바탕으로 현재 시장 상황과 매수 타점에 대한 종합적인 투자 제언을 작성해줘:\n\n"
+        final_message += f"{market_details}"
         final_message += "\n\n".join(detailed_messages)
         final_message += "</code>"
     else:
