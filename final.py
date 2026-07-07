@@ -31,6 +31,7 @@ try:
         calculate_kr_recovery_confirmation,
         get_strategic_advice,
         run_historical_backtest,
+        run_kr_historical_backtest,
         get_cashflow_interpretation,
         relative_strength_label,
         get_ai_signal,
@@ -650,78 +651,140 @@ with tab2:
     st.divider()
 
     # ── 백테스트 (10년 데이터 기반 완화 컷) ──
-    with st.expander("🔬 과거 10년 백테스트 (미국 바닥 탐지기 기준)"):
+    with st.expander("🔬 과거 10년 백테스트 (바닥 탐지기 기준)"):
         st.markdown(
-            "실시간 바닥 탐지기와 **완전히 동일한 스코어러**(Drawdown + RSI + VIX + 구조 보너스 + 칼날 패널티)를 "
+            "실시간 바닥 탐지기와 **완전히 동일한 스코어러**를 "
             "과거 10년에 매일 적용한 결과입니다. **주요 이벤트에서 얼마나 점수가 나왔는지 확인**해보세요 — 모델 신뢰도 검증에 핵심입니다. "
-            "(CNN F&G는 과거 데이터가 없어 제외되지만, 만점 대비 %로 정규화하므로 실시간 점수와 같은 자로 비교 가능합니다.)"
         )
-        bt = run_historical_backtest(spy_10y, vix_10y, vix3m_10y)
+        
+        tab_us_bt, tab_kr_bt = st.tabs(["🇺🇸 미국장 (S&P 500)", "🇰🇷 한국장 (KOSPI)"])
+        
+        with tab_us_bt:
+            bt_us = run_historical_backtest(spy_10y, vix_10y, vix3m_10y)
+            if bt_us:
+                st.markdown("**📌 주요 시장 이벤트에서의 바닥 탐지 점수 (미국장)**")
+                ev_cols = st.columns(len(bt_us["주요 이벤트 점수"]))
+                for i, (name, ev_score) in enumerate(bt_us["주요 이벤트 점수"].items()):
+                    if ev_score is not None and isinstance(ev_score, int):
+                        color = "#21c354" if ev_score >= 50 else "#fcca46" if ev_score >= 35 else "#ff4b4b"
+                        ev_cols[i].markdown(
+                            f"<div style='text-align:center; padding:10px; border-radius:8px; border:1px solid {color};'>"
+                            f"<b>{name}</b><br>"
+                            f"<span style='font-size:1.8em; color:{color};'>{ev_score}점</span>"
+                            f"</div>", unsafe_allow_html=True
+                        )
+                    else:
+                        ev_cols[i].markdown(f"**{name}**: {ev_score}")
 
-        if bt:
-            st.markdown("**📌 주요 시장 이벤트에서의 바닥 탐지 점수**")
-            ev_cols = st.columns(len(bt["주요 이벤트 점수"]))
-            for i, (name, ev_score) in enumerate(bt["주요 이벤트 점수"].items()):
-                if ev_score is not None and isinstance(ev_score, int):
-                    color = "#21c354" if ev_score >= 50 else "#fcca46" if ev_score >= 35 else "#ff4b4b"
-                    ev_cols[i].markdown(
-                        f"<div style='text-align:center; padding:10px; border-radius:8px; border:1px solid {color};'>"
-                        f"<b>{name}</b><br>"
-                        f"<span style='font-size:1.8em; color:{color};'>{ev_score}점</span>"
-                        f"</div>", unsafe_allow_html=True
-                    )
+                st.markdown("")
+                bt_col1, bt_col2 = st.columns(2)
+
+                stat_70 = bt_us["70점 이상 (강력 매수)"]
+                bt_col1.markdown("**🔥 70점 이상 (강력 매수 구간)**")
+                if stat_70["발생 횟수"] > 0:
+                    bt_col1.markdown(f"- 시그널 발생: 과거 10년간 **{stat_70['발생 횟수']}일**")
+                    bt_col1.markdown(f"- 평균 3개월 수익률: **+{stat_70['평균 3M 수익률']:.2f}%**")
+                    bt_col1.markdown(f"- 평균 6개월 수익률: **+{stat_70['평균 6M 수익률']:.2f}%**")
+                    bt_col1.markdown(f"- 투자 승률 (3M): **{stat_70['승률 3M']:.1f}%**")
                 else:
-                    ev_cols[i].markdown(f"**{name}**: {ev_score}")
+                    bt_col1.info("과거 10년간 70점 이상 달성 없음")
 
-            st.markdown("")
-            bt_col1, bt_col2 = st.columns(2)
+                stat_50 = bt_us["50~69점 (분할 매수)"]
+                bt_col2.markdown("**🟢 50~69점 (분할 매수 구간)**")
+                if stat_50["발생 횟수"] > 0:
+                    bt_col2.markdown(f"- 시그널 발생: 과거 10년간 **{stat_50['발생 횟수']}일**")
+                    bt_col2.markdown(f"- 평균 3개월 수익률: **+{stat_50['평균 3M 수익률']:.2f}%**")
+                    bt_col2.markdown(f"- 평균 6개월 수익률: **+{stat_50['평균 6M 수익률']:.2f}%**")
+                    bt_col2.markdown(f"- 투자 승률 (3M): **{stat_50['승률 3M']:.1f}%**")
+                else:
+                    bt_col2.info("해당 구간 시그널 발생 없음")
 
-            stat_70 = bt["70점 이상 (강력 매수)"]
-            bt_col1.markdown("**🔥 70점 이상 (강력 매수 구간)**")
-            if stat_70["발생 횟수"] > 0:
-                bt_col1.markdown(f"- 시그널 발생: 과거 10년간 **{stat_70['발생 횟수']}일**")
-                bt_col1.markdown(f"- 평균 3개월 수익률: **+{stat_70['평균 3M 수익률']:.2f}%**")
-                bt_col1.markdown(f"- 평균 6개월 수익률: **+{stat_70['평균 6M 수익률']:.2f}%**")
-                bt_col1.markdown(f"- 투자 승률 (3M): **{stat_70['승률 3M']:.1f}%**")
+                if "score_series" in bt_us and not bt_us["score_series"].empty:
+                    st.markdown("**📈 바닥 탐지 점수 vs 지수 낙폭 (10년, 이중축)**")
+                    src = bt_us["score_series"].reset_index()
+                    src.columns = ["Date", "Score", "Drawdown"]
+
+                    base = alt.Chart(src).encode(x=alt.X("Date:T", title=None))
+                    score_area = base.mark_area(opacity=0.35, color="#fcca46").encode(
+                        y=alt.Y("Score:Q", title="바닥 탐지 점수",
+                                scale=alt.Scale(domain=[0, 100]),
+                                axis=alt.Axis(titleColor="#b8860b"))
+                    )
+                    dd_line = base.mark_line(color="#ff4b4b", strokeWidth=1.2).encode(
+                        y=alt.Y("Drawdown:Q", title="Drawdown (%)",
+                                axis=alt.Axis(titleColor="#ff4b4b"))
+                    )
+                    chart = alt.layer(score_area, dd_line).resolve_scale(y="independent").properties(height=280)
+                    st.altair_chart(chart, use_container_width=True)
+                    st.caption(
+                        "🟨 노란 영역 = 바닥 점수 / 🔴 빨간 선 = 고점 대비 낙폭. "
+                        "점수가 50 이상으로 치솟는 시점 = 역사적 매수 기회 (2018년 말, 2020년 코로나, 2022년 바닥 확인). "
+                        "낙폭이 깊어지는데 점수가 함께 올라가는지가 모델 건전성의 핵심입니다."
+                    )
             else:
-                bt_col1.info("과거 10년간 70점 이상 달성 없음")
+                st.warning("미국장 백테스트에 필요한 10년치 데이터가 부족합니다.")
 
-            stat_50 = bt["50~69점 (분할 매수)"]
-            bt_col2.markdown("**🟢 50~69점 (분할 매수 구간)**")
-            if stat_50["발생 횟수"] > 0:
-                bt_col2.markdown(f"- 시그널 발생: 과거 10년간 **{stat_50['발생 횟수']}일**")
-                bt_col2.markdown(f"- 평균 3개월 수익률: **+{stat_50['평균 3M 수익률']:.2f}%**")
-                bt_col2.markdown(f"- 평균 6개월 수익률: **+{stat_50['평균 6M 수익률']:.2f}%**")
-                bt_col2.markdown(f"- 투자 승률 (3M): **{stat_50['승률 3M']:.1f}%**")
+        with tab_kr_bt:
+            bt_kr = run_kr_historical_backtest(kospi_10y, vkospi_10y, usdkrw_10y)
+            if bt_kr:
+                st.markdown("**📌 주요 시장 이벤트에서의 바닥 탐지 점수 (한국장)**")
+                ev_cols = st.columns(len(bt_kr["주요 이벤트 점수"]))
+                for i, (name, ev_score) in enumerate(bt_kr["주요 이벤트 점수"].items()):
+                    if ev_score is not None and isinstance(ev_score, int):
+                        color = "#21c354" if ev_score >= 50 else "#fcca46" if ev_score >= 35 else "#ff4b4b"
+                        ev_cols[i].markdown(
+                            f"<div style='text-align:center; padding:10px; border-radius:8px; border:1px solid {color};'>"
+                            f"<b>{name}</b><br>"
+                            f"<span style='font-size:1.8em; color:{color};'>{ev_score}점</span>"
+                            f"</div>", unsafe_allow_html=True
+                        )
+                    else:
+                        ev_cols[i].markdown(f"**{name}**: {ev_score}")
+
+                st.markdown("")
+                bt_col1, bt_col2 = st.columns(2)
+
+                stat_70 = bt_kr["70점 이상 (강력 매수)"]
+                bt_col1.markdown("**🔥 70점 이상 (강력 매수 구간)**")
+                if stat_70["발생 횟수"] > 0:
+                    bt_col1.markdown(f"- 시그널 발생: 과거 10년간 **{stat_70['발생 횟수']}일**")
+                    bt_col1.markdown(f"- 평균 3개월 수익률: **+{stat_70['평균 3M 수익률']:.2f}%**")
+                    bt_col1.markdown(f"- 평균 6개월 수익률: **+{stat_70['평균 6M 수익률']:.2f}%**")
+                    bt_col1.markdown(f"- 투자 승률 (3M): **{stat_70['승률 3M']:.1f}%**")
+                else:
+                    bt_col1.info("과거 10년간 70점 이상 달성 없음")
+
+                stat_50 = bt_kr["50~69점 (분할 매수)"]
+                bt_col2.markdown("**🟢 50~69점 (분할 매수 구간)**")
+                if stat_50["발생 횟수"] > 0:
+                    bt_col2.markdown(f"- 시그널 발생: 과거 10년간 **{stat_50['발생 횟수']}일**")
+                    bt_col2.markdown(f"- 평균 3개월 수익률: **+{stat_50['평균 3M 수익률']:.2f}%**")
+                    bt_col2.markdown(f"- 평균 6개월 수익률: **+{stat_50['평균 6M 수익률']:.2f}%**")
+                    bt_col2.markdown(f"- 투자 승률 (3M): **{stat_50['승률 3M']:.1f}%**")
+                else:
+                    bt_col2.info("해당 구간 시그널 발생 없음")
+
+                if "score_series" in bt_kr and not bt_kr["score_series"].empty:
+                    st.markdown("**📈 한국장 바닥 탐지 점수 vs 지수 낙폭 (10년, 이중축)**")
+                    src = bt_kr["score_series"].reset_index()
+                    src.columns = ["Date", "Score", "Drawdown"]
+
+                    base = alt.Chart(src).encode(x=alt.X("Date:T", title=None))
+                    score_area = base.mark_area(opacity=0.35, color="#fcca46").encode(
+                        y=alt.Y("Score:Q", title="한국장 바닥 점수",
+                                scale=alt.Scale(domain=[0, 100]),
+                                axis=alt.Axis(titleColor="#b8860b"))
+                    )
+                    dd_line = base.mark_line(color="#ff4b4b", strokeWidth=1.2).encode(
+                        y=alt.Y("Drawdown:Q", title="Drawdown (%)",
+                                axis=alt.Axis(titleColor="#ff4b4b"))
+                    )
+                    chart = alt.layer(score_area, dd_line).resolve_scale(y="independent").properties(height=280)
+                    st.altair_chart(chart, use_container_width=True)
             else:
-                bt_col2.info("해당 구간 시그널 발생 없음")
+                st.warning("한국장 백테스트에 필요한 10년치 데이터가 부족합니다.")
 
-            if "score_series" in bt and not bt["score_series"].empty:
-                st.markdown("**📈 바닥 탐지 점수 vs 지수 낙폭 (10년, 이중축)**")
-                src = bt["score_series"].reset_index()
-                src.columns = ["Date", "Score", "Drawdown"]
-
-                base = alt.Chart(src).encode(x=alt.X("Date:T", title=None))
-                score_area = base.mark_area(opacity=0.35, color="#fcca46").encode(
-                    y=alt.Y("Score:Q", title="바닥 탐지 점수",
-                            scale=alt.Scale(domain=[0, 100]),
-                            axis=alt.Axis(titleColor="#b8860b"))
-                )
-                dd_line = base.mark_line(color="#ff4b4b", strokeWidth=1.2).encode(
-                    y=alt.Y("Drawdown:Q", title="Drawdown (%)",
-                            axis=alt.Axis(titleColor="#ff4b4b"))
-                )
-                chart = alt.layer(score_area, dd_line).resolve_scale(y="independent").properties(height=280)
-                st.altair_chart(chart, use_container_width=True)
-                st.caption(
-                    "🟨 노란 영역 = 바닥 점수 / 🔴 빨간 선 = 고점 대비 낙폭. "
-                    "점수가 50 이상으로 치솟는 시점 = 역사적 매수 기회 (2018년 말, 2020년 코로나, 2022년 바닥 확인). "
-                    "낙폭이 깊어지는데 점수가 함께 올라가는지가 모델 건전성의 핵심입니다."
-                )
-
-            st.caption("※ 백테스트는 과거 통계이며 미래 수익을 보장하지 않습니다. 고점 산정 왜곡 방지를 위해 데이터 첫 1년은 집계에서 제외됩니다.")
-        else:
-            st.warning("백테스트에 필요한 10년치 데이터가 부족합니다.")
+        st.caption("※ 백테스트는 과거 통계이며 미래 수익을 보장하지 않습니다. 고점 산정 왜곡 방지를 위해 데이터 첫 1년은 집계에서 제외됩니다.")
 
     st.divider()
 

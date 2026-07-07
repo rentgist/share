@@ -685,48 +685,49 @@ def get_strategic_advice(danger_count, bottom_score, bottom_verdict, regime="", 
     # ── ③ 바닥 점수 70+ : 역사적 바닥권 ──
     elif bottom_score >= 70:
         if danger_count >= 5:
-            headline = "🔥 역사적 바닥권 + 시스템 위기 진행 중 — '소액 선발대' 전략"
+            headline = "🔥 역사적 바닥권 + 시스템 위기 진행 중 — '1차 선발대' 전략 (30%)"
             color = "#fcca46"
             actions = [
-                "낙폭·공포는 충분하지만 신용경색/킬스위치가 아직 살아있습니다 → 바닥 '근접'이지 '확정'이 아님.",
-                "1차 진입은 총 예산의 10~20%만 (선발대). 틀려도 계좌가 안 아픈 크기로.",
-                "증액 트리거: 신용 스프레드 🟢 복귀 또는 VIX 백워데이션 해소 — 이게 기관 자금 복귀 신호입니다.",
-                "6원칙 상기: 고점 대비 -30% 구간이면 기계적 분할 지속, -50% 밑이면 과감히 매수.",
+                "역사적 과매도 구간이지만 신용경색/킬스위치가 살아있습니다 → 바닥 '근접'이지 '확정'이 아님.",
+                "1차 선발대로 총 예산의 30%만 진입합니다. (하워드 막스 방식: 깊은 가치가 보이면 과감히 담되, 만약을 대비한 현금 확보).",
+                "추가 증액 트리거: 신용 스프레드 🟢 복귀 또는 VIX 백워데이션 해소 — 이게 기관 자금 복귀 신호입니다.",
+                "지수 ETF 절반 + 펀더멘탈 우량주 절반으로 하방을 방어하세요.",
             ]
         else:
             color = "#21c354"
             if recovery_score is not None and recovery_score < 50:
-                headline = "🔥 강력 매수 구간 — 1차 선발대 투입 타이밍"
+                headline = "🔥 강력 매수 구간 — 1차 선발대 투입 타이밍 (30~50%)"
                 actions = [
                     "역사적 바닥 점수 + 위험 탐지기 진정 = 11원칙 '위기 줍줍'의 본령입니다.",
-                    "단, 뚜렷한 반등 신호가 아직 없으므로, 1차 진입 전이라면 총 예산의 10~20%만 투입하세요.",
-                    "아래 백테스트 탭에서 이 점수대의 과거 3M/6M 승률을 직접 확인하고 들어가세요 — 확신이 사이즈를 만듭니다.",
-                    "종목 선택: 지수 ETF 절반 + 낙폭과대 우량주(펀더멘탈 점수 4+) 절반 배분이 회복탄력 극대화.",
+                    "단, 뚜렷한 반등 신호가 아직 없으므로, 1차 진입으로 총 예산의 30~50%를 투입하세요.",
+                    "떨어지는 칼날 리스크를 관리하며 평균 단가를 낮출 수 있는 최적의 비중입니다.",
+                    "아래 백테스트 탭에서 이 점수대의 과거 승률을 직접 확인하고 들어가세요 — 확신이 사이즈를 만듭니다.",
                 ]
             else:
-                headline = "🔥 강력 매수 구간 — 분할 매수 2~3차 집행 타이밍"
+                headline = "🔥 강력 매수 구간 — 본격 비중 확대 타이밍 (50~70% 이상)"
                 actions = [
-                    "역사적 바닥 점수 + 위험 탐지기 진정 = 11원칙 '위기 줍줍'의 본령입니다.",
-                    "총 예산의 40~60%까지 집행 (이미 1차를 넣었다면 2·3차 증액 구간).",
-                    "아래 백테스트 탭에서 이 점수대의 과거 3M/6M 승률을 직접 확인하고 들어가세요 — 확신이 사이즈를 만듭니다.",
+                    "역사적 바닥 + 위험 진정 + 반등 신호 포착 = 최고의 투자 타이밍입니다.",
+                    "총 예산의 50~70% 이상까지 과감히 집행하세요 (이미 1차 선발대가 있다면 2·3차 증액 구간).",
+                    "워런 버핏의 '비가 올 때는 양동이를 내놓아라'라는 원칙이 적용되는 시기입니다.",
                     "종목 선택: 지수 ETF 절반 + 낙폭과대 우량주(펀더멘탈 점수 4+) 절반 배분이 회복탄력 극대화.",
                 ]
 
     # ── ④ 50~69 : 분할 매수 접근 구간 ──
     elif bottom_score >= 50:
         if danger_count >= 5:
-            headline = "🟡 매수권 점수 + 위험 경보 우세 — 최소 단위만"
+            headline = "🟡 매수권 점수 + 위험 경보 우세 — 관망 또는 최소 단위만 (10%)"
             color = "#fcca46"
             actions = [
                 "점수는 분할 매수권이지만 위기 경보가 우세 → 추가 하락 확률이 여전히 높습니다.",
-                "진입한다면 총 예산의 10% 이내. '더 빠지면 더 산다'가 성립하는 금액만.",
+                "진입한다면 총 예산의 10% 이내 최소 단위만. '더 빠지면 더 산다'가 성립하는 금액만.",
                 "현금 70% 이상 유지 — 지금 아끼는 현금이 점수 70+에서의 진짜 기회를 삽니다.",
             ]
         else:
-            headline = "🟢 1차 분할 매수 타점 — 예산의 20~30% 진입"
+            headline = "🟢 1차 분할 매수 타점 — 초기 선발대 진입 (20~30%)"
             color = "#21c354"
             actions = [
-                "역발상 1차 진입 구간입니다. 단, 바닥 '확인'이 아니라 '접근' 단계 — 몰빵 금지.",
+                "가치가 돋보이기 시작하는 1차 진입 구간입니다. 단, 바닥 '확인'이 아니라 '접근' 단계 — 몰빵 금지.",
+                "총 예산의 20~30% 규모로 초기 선발대를 투입하세요.",
                 "2차 증액 트리거: ① 점수 70+ 도달 또는 ② 저점 높이기 + 20일선 탈환 동시 확인.",
                 "시간 분산: 다음 분할까지 최소 1~2주 간격. 같은 주에 전 예산 소진이 최다 실수 유형입니다.",
             ]
@@ -869,6 +870,130 @@ def run_historical_backtest(spy_hist, vix_hist, vix3m_hist):
         "코로나 바닥": "2020-03-23",
         "2022 약세장 바닥": "2022-10-13",
         "2018 12월 조정": "2018-12-24",
+    }
+    event_scores = {}
+    for name, d in event_dates.items():
+        try:
+            dt = pd.Timestamp(d)
+            closest = df.index[df.index.get_indexer([dt], method='nearest')[0]]
+            if abs((closest - dt).days) <= 5:
+                event_scores[name] = int(df.loc[closest, 'Score'])
+            else:
+                event_scores[name] = "데이터 외 구간"
+        except Exception:
+            event_scores[name] = None
+
+    return {
+        "70점 이상 (강력 매수)":    _stat(res_70),
+        "50~69점 (분할 매수)":      _stat(res_50),
+        "주요 이벤트 점수":          event_scores,
+        "score_series":             df[['Score', 'Drawdown']],
+    }
+
+
+def run_kr_historical_backtest(kospi_hist, vkospi_hist, usdkrw_hist):
+    if any(df is None for df in [kospi_hist, vkospi_hist, usdkrw_hist]) or any(df.empty for df in [kospi_hist, vkospi_hist, usdkrw_hist]):
+        return None
+
+    df = pd.concat([
+        kospi_hist['Close'], vkospi_hist['Close'], usdkrw_hist['Close'],
+    ], axis=1).ffill().dropna()
+
+    if df.empty or len(df) < 400:
+        return None
+
+    df.columns = ['KOSPI', 'VKOSPI', 'USDKRW']
+
+    # Drawdown (max 35)
+    df['KOSPI_High_252'] = df['KOSPI'].rolling(252, min_periods=252).max()
+    df['Drawdown']     = (df['KOSPI'] / df['KOSPI_High_252'] - 1) * 100
+    df['RSI']          = get_rolling_rsi(df['KOSPI'], 14)
+    df['USDKRW_RSI']   = get_rolling_rsi(df['USDKRW'], 14)
+    
+    df = df.dropna(subset=['Drawdown', 'RSI', 'USDKRW_RSI'])
+    if df.empty:
+        return None
+
+    df['Fwd_3M_Ret'] = (df['KOSPI'].shift(-63)  / df['KOSPI'] - 1) * 100
+    df['Fwd_6M_Ret'] = (df['KOSPI'].shift(-126) / df['KOSPI'] - 1) * 100
+
+    dd = -df['Drawdown']
+    kr_rsi = df['RSI']
+    vkospi = df['VKOSPI']
+    krw_rsi = df['USDKRW_RSI']
+
+    # Vectorized score calculation (equivalent to calculate_kr_bottom_finder)
+    s_dd = np.where(dd >= 20, 35,
+             np.where(dd >= 12, 22 + (dd - 12) * (35 - 22) / (20 - 12),
+               np.where(dd >= 7, 10 + (dd - 7) * (22 - 10) / (12 - 7),
+                 np.where(dd > 0, dd * 10 / 7, 0))))
+                 
+    s_rsi = np.where(kr_rsi <= 30, 20,
+              np.where(kr_rsi <= 40, 12 + (40 - kr_rsi) * (20 - 12) / (40 - 30),
+                np.where(kr_rsi <= 45, 5 + (45 - kr_rsi) * (12 - 5) / (45 - 40),
+                  np.where(kr_rsi <= 60, (60 - kr_rsi) * 5 / (60 - 45), 0))))
+                  
+    s_vkospi = np.where(vkospi >= 25, 25,
+                 np.where(vkospi >= 20, 15 + (vkospi - 20) * (25 - 15) / (25 - 20),
+                   np.where(vkospi >= 16, 5 + (vkospi - 16) * (15 - 5) / (20 - 16),
+                     np.where(vkospi >= 12, (vkospi - 12) * 5 / (16 - 12), 0))))
+                     
+    s_krw = np.where(krw_rsi <= 55, 20,
+              np.where(krw_rsi <= 65, 10 + (65 - krw_rsi) * (20 - 10) / (65 - 55),
+                np.where(krw_rsi <= 75, (75 - krw_rsi) * 10 / (75 - 65), 0)))
+                
+    kill_switch = (krw_rsi > 70) & (df['Drawdown'] > -10)
+    
+    max_score = 100 # Assuming all data available
+    score = (s_dd + s_rsi + s_vkospi + s_krw)
+    score = np.round(score / max_score * 100).clip(0, 100)
+    
+    # Structure Bonus
+    close = df['KOSPI']
+    rets  = close.pct_change()
+    ma20  = close.rolling(20).mean()
+    ma50  = close.rolling(50).mean()
+    ma50_slope = (ma50 / ma50.shift(21) - 1) * 100
+    down_ratio = (rets < 0).rolling(20).mean()
+    p1 = close.shift(30).rolling(30).min()
+    p2 = close.rolling(30).min()
+    r1 = df['RSI'].shift(30).rolling(30).min()
+    r2 = df['RSI'].rolling(30).min()
+
+    bonus = np.zeros(len(df))
+    bonus += np.where((df['Drawdown'] <= -10) & (down_ratio >= GRIND_DOWN_RATIO) & (ma50_slope < 0), 8, 0)
+    bonus += np.where((p2 < p1) & (r2 > r1 + DIV_RSI_MARGIN), 10, 0)
+    bonus += np.where((p2 > p1 * 1.005) & (df['Drawdown'] <= -8), 5, 0)
+    bonus += np.where((close > ma20) & (df['Drawdown'] <= -10), 5, 0)
+    
+    score = np.minimum(score + bonus, 100)
+    score = np.where(kill_switch, np.minimum(score, 30), score)
+    
+    # Knife penalty
+    ret_1d  = rets * 100
+    ma5     = close.rolling(5).mean()
+    gap_ma5 = (close / ma5 - 1) * 100
+    knife   = (ret_1d <= KNIFE_1D_RET) | (gap_ma5 <= KNIFE_MA5_GAP)
+    score = np.where(knife & (score >= 35), score - KNIFE_PENALTY, score)
+    df['Score'] = score.clip(0, 100).astype(int)
+
+    res_70 = df[df['Score'] >= 70].dropna(subset=['Fwd_3M_Ret'])
+    res_50 = df[(df['Score'] >= 50) & (df['Score'] < 70)].dropna(subset=['Fwd_3M_Ret'])
+
+    def _stat(sub):
+        if len(sub) == 0:
+            return {"발생 횟수": 0, "평균 3M 수익률": 0, "평균 6M 수익률": 0, "승률 3M": 0}
+        return {
+            "발생 횟수":    len(sub),
+            "평균 3M 수익률": round(sub['Fwd_3M_Ret'].mean(), 2),
+            "평균 6M 수익률": round(sub['Fwd_6M_Ret'].dropna().mean(), 2) if len(sub['Fwd_6M_Ret'].dropna()) > 0 else 0,
+            "승률 3M":       round((sub['Fwd_3M_Ret'] > 0).mean() * 100, 1),
+        }
+
+    event_dates = {
+        "코로나 바닥": "2020-03-19",
+        "2022 약세장 바닥": "2022-09-30",
+        "2018 10월 폭락": "2018-10-29",
     }
     event_scores = {}
     for name, d in event_dates.items():
