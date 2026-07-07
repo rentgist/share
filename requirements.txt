@@ -7,3 +7,5 @@ requests
 tenacity
 altair
 requests-cache
+
+google-generativeai
