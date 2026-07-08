@@ -9,4 +9,5 @@ tenacity
 altair
 requests-cache
 google-generativeai
+google-genai
 pykrx

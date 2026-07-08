@@ -1170,54 +1170,63 @@ def generate_economic_commentary(summary_dict, phase):
     코드가 판정한 데이터와 국면을 Gemini API에 던져 자연어 해설 생성.
     """
     import os
-    try:
-        import google.generativeai as genai
-    except ImportError:
-        return "⚠️ google-generativeai 패키지가 설치되지 않았습니다."
-        
+    
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         return "⚠️ 환경 변수에 GEMINI_API_KEY가 설정되지 않아 AI 브리핑을 제공할 수 없습니다."
-        
-    try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-pro")
-        
-        prompt = f"""
-        너는 CFO 역할을 맡은 거시경제 전문가다. 
-        아래 전달받은 데이터(수치)와 시장 국면(판단 결과)을 임의로 수정하지 마라.
-        대신 [미국 금리/유가 동향 ➔ 달러 가치(환율) 변화 ➔ 외국인 자금의 한국 시장 유입/이탈 ➔ 개인/기관의 대응]으로 이어지는 '돈의 흐름과 경제 상황'을 인과관계에 맞게 3~4문장으로 알기 쉽게 해설해라.
+    
+    # 새 SDK(google-genai) 시도 → 실패 시 구 SDK(google-generativeai) 시도
+    prompt = f"""
+    너는 CFO 역할을 맡은 거시경제 전문가다. 
+    아래 전달받은 데이터(수치)와 시장 국면(판단 결과)을 임의로 수정하지 마라.
+    대신 [미국 금리/유가 동향 ➔ 달러 가치(환율) 변화 ➔ 외국인 자금의 한국 시장 유입/이탈 ➔ 개인/기관의 대응]으로 이어지는 '돈의 흐름과 경제 상황'을 인과관계에 맞게 3~4문장으로 알기 쉽게 해설해라.
 
-        [시장 데이터]
-        - 미국 10년물 국채 금리: {summary_dict['TNX_10Y']}
-        - WTI 원유: {summary_dict['WTI_Crude']}
-        - 원/달러 환율: {summary_dict['USD_KRW']}
-        
-        [코스피 수급 (순매수)]
-        - 외국인: {summary_dict['Foreigner']}
-        - 기관합계: {summary_dict['Institutional']}
-        - 개인: {summary_dict['Retail']}
-        
-        [시스템이 판정한 현재 시장 국면]
-        - {phase}
-        
-        오직 해설 텍스트만 3~4문장으로 작성해. 불필요한 인사말이나 마크다운 포맷팅은 제외해.
-        """
-        
+    [시장 데이터]
+    - 미국 10년물 국채 금리: {summary_dict['TNX_10Y']}
+    - WTI 원유: {summary_dict['WTI_Crude']}
+    - 원/달러 환율: {summary_dict['USD_KRW']}
+    
+    [코스피 수급 (순매수)]
+    - 외국인: {summary_dict['Foreigner']}
+    - 기관합계: {summary_dict['Institutional']}
+    - 개인: {summary_dict['Retail']}
+    
+    [시스템이 판정한 현재 시장 국면]
+    - {phase}
+    
+    오직 해설 텍스트만 3~4문장으로 작성해. 불필요한 인사말이나 마크다운 포맷팅은 제외해.
+    """
+    
+    # 방법 1: 새 SDK (google-genai)
+    try:
+        from google import genai
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt,
+        )
+        return response.text.strip()
+    except Exception as e1:
+        print(f"[google-genai 시도 실패]: {e1}")
+    
+    # 방법 2: 구 SDK (google-generativeai) 폴백
+    try:
+        import google.generativeai as genai_old
+        genai_old.configure(api_key=api_key)
+        model = genai_old.GenerativeModel("gemini-2.0-flash")
         safety_settings = [
             {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
         ]
-        
         response = model.generate_content(prompt, safety_settings=safety_settings)
         return response.text.strip()
-    except Exception as e:
+    except Exception as e2:
         import traceback
         err_msg = traceback.format_exc()
         print(f"❌ AI 해설 생성 중 오류 발생:\n{err_msg}")
-        return f"⚠️ AI 해설 생성 중 오류 발생: {e}"
+        return f"⚠️ AI 해설 생성 중 오류 발생: {e2}"
 
 
 def get_edgar_link(ticker: str) -> str:
