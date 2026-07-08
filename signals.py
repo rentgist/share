@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from indicators import calc_rsi, calc_macd, get_rolling_rsi
+import streamlit as st
 
 # ═════════════════════════════════════════
 # 공용 상수 (실시간 & 백테스트가 반드시 같은 값 사용)
@@ -1212,6 +1213,7 @@ def analyze_macro_flow(macro_data, flow_data, extra_data=None):
     
     return phase, summary_dict
 
+@st.cache_data(ttl=3600)
 def generate_economic_commentary(summary_dict, phase):
     """
     코드가 판정한 데이터와 국면을 Gemini API에 던져 자연어 해설 생성.
@@ -1298,7 +1300,18 @@ def generate_economic_commentary(summary_dict, phase):
     except Exception as e2:
         import traceback
         err_msg = traceback.format_exc()
-        print(f"❌ AI 해설 생성 중 오류 발생:\n{err_msg}")
+        print(f"[google-generativeai 시도 실패]:\n{err_msg}")
+        
+        error_text = str(e2)
+        if "429" in error_text or "Quota exceeded" in error_text:
+            return (
+                "⚠️ **Gemini API 일일/분당 무료 제공량(Quota)을 초과했습니다.**\n\n"
+                "Google AI Studio의 무료 버전(Free Tier) API 키는 호출 횟수(RPM) 제한이 매우 낮습니다. "
+                "스트림릿 화면을 새로고침하거나 UI를 조작할 때마다 API가 호출되어 한도에 금방 도달할 수 있습니다.\n\n"
+                "💡 **해결 방법:**\n"
+                "Google Cloud Console에서 프로젝트에 **결제 수단(신용카드)을 등록(Billing Enable)**하시면 넉넉한 한도(Pay-as-you-go)로 이용 가능합니다. "
+                "(개인 용도로 과도하게 사용하지 않는 이상 기본 제공량 내에서 처리되어 요금이 청구되지 않으니 안심하세요!)"
+            )
         return f"⚠️ AI 해설 생성 중 오류 발생: {e2}"
 
 
