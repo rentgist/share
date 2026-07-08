@@ -200,7 +200,7 @@ def analyze_with_gemini(
 
     try:
         genai.configure(api_key=api_key)
-        model   = genai.GenerativeModel("gemini-pro")
+        model   = genai.GenerativeModel("gemini-2.5-flash")
         
         # 유해 콘텐츠 필터 강제 해제 (마켓 뉴스 키워드 차단 방지)
         safety_settings = [

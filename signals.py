@@ -1198,17 +1198,15 @@ def generate_economic_commentary(summary_dict, phase):
     """
     
     # 방법 1: 새 SDK (google-genai)
-    e1_error = "Not attempted"
     try:
         from google import genai
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-2.5-flash",
             contents=prompt,
         )
         return response.text.strip()
     except Exception as e1:
-        e1_error = str(e1)
         print(f"[google-genai 시도 실패]: {e1}")
     
     # 방법 2: 구 SDK (google-generativeai) 폴백
@@ -1216,16 +1214,7 @@ def generate_economic_commentary(summary_dict, phase):
         import google.generativeai as genai_old
         genai_old.configure(api_key=api_key)
         
-        # 사용 가능한 모델 리스트 강제 추출 (디버깅 용도)
-        available_models = []
-        try:
-            for m in genai_old.list_models():
-                if 'generateContent' in m.supported_generation_methods:
-                    available_models.append(m.name)
-        except Exception as list_e:
-            available_models.append(f"List error: {list_e}")
-            
-        model = genai_old.GenerativeModel("gemini-1.5-flash")
+        model = genai_old.GenerativeModel("gemini-2.5-flash")
         safety_settings = [
             {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
@@ -1235,7 +1224,10 @@ def generate_economic_commentary(summary_dict, phase):
         response = model.generate_content(prompt, safety_settings=safety_settings)
         return response.text.strip()
     except Exception as e2:
-        return f"⚠️ 디버깅 정보:\n[새 라이브러리(google-genai) 에러]: {e1_error}\n\n[구 라이브러리(generativeai) 에러]: {e2}\n\n[현재 계정에서 사용 가능한 모델 목록]: {', '.join(available_models)}"
+        import traceback
+        err_msg = traceback.format_exc()
+        print(f"❌ AI 해설 생성 중 오류 발생:\n{err_msg}")
+        return f"⚠️ AI 해설 생성 중 오류 발생: {e2}"
 
 
 def get_edgar_link(ticker: str) -> str:
