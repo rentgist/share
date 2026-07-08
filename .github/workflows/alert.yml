@@ -33,5 +33,6 @@ jobs:
           # 깃허브 시크릿에 저장한 키를 스크립트 환경변수로 전달합니다.
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           python alert_bot.py
