@@ -1108,59 +1108,87 @@ def normalize_title(raw_title: str) -> str:
     return raw_title.strip()
 
 
-def analyze_macro_flow(macro_data, flow_data):
+def analyze_macro_flow(macro_data, flow_data, extra_data=None):
     """
     수집된 매크로 지표(금리, 유가, 환율)와 수급(외국인 등)을 교차 분석하여 국면(Phase) 확정.
+    extra_data: {cnn_score, cnn_rating, us_score, us_phase, kr_score, kr_phase} (optional)
     """
     tnx_df = macro_data.get('tnx_10y', None)
     wti_df = macro_data.get('wti_10y', None)
     usdkrw_df = macro_data.get('usdkrw_10y', None)
+    vix_df = macro_data.get('vix_10y', None)
+    spy_df = macro_data.get('spy_10y', None)
+    kospi_df = macro_data.get('kospi_10y', None)
     
-    # 최근 2거래일 데이터 추출
-    tnx_current, tnx_change = 0, 0
-    if tnx_df is not None and not tnx_df.empty:
-        tnx_clean = tnx_df['Close'].dropna()
-        if len(tnx_clean) >= 2:
-            tnx_current = tnx_clean.iloc[-1]
-            tnx_change = tnx_current - tnx_clean.iloc[-2]
-        
-    wti_current, wti_change = 0, 0
-    if wti_df is not None and not wti_df.empty:
-        wti_clean = wti_df['Close'].dropna()
-        if len(wti_clean) >= 2:
-            wti_current = wti_clean.iloc[-1]
-            wti_change = wti_current - wti_clean.iloc[-2]
-        
-    usdkrw_current, usdkrw_change = 0, 0
-    if usdkrw_df is not None and not usdkrw_df.empty:
-        usdkrw_clean = usdkrw_df['Close'].dropna()
-        if len(usdkrw_clean) >= 2:
-            usdkrw_current = usdkrw_clean.iloc[-1]
-            usdkrw_change = usdkrw_current - usdkrw_clean.iloc[-2]
+    # 최근 2거래일 데이터 추출 헬퍼
+    def _extract(df):
+        if df is not None and not df.empty:
+            clean = df['Close'].dropna()
+            if len(clean) >= 2:
+                return float(clean.iloc[-1]), float(clean.iloc[-1] - clean.iloc[-2])
+        return 0.0, 0.0
+    
+    tnx_current, tnx_change = _extract(tnx_df)
+    wti_current, wti_change = _extract(wti_df)
+    usdkrw_current, usdkrw_change = _extract(usdkrw_df)
+    vix_current, vix_change = _extract(vix_df)
+    spy_current, spy_change = _extract(spy_df)
+    kospi_current, kospi_change = _extract(kospi_df)
+    
+    # S&P 500 / KOSPI 등락률
+    spy_pct = (spy_change / (spy_current - spy_change) * 100) if (spy_current - spy_change) != 0 else 0
+    kospi_pct = (kospi_change / (kospi_current - kospi_change) * 100) if (kospi_current - kospi_change) != 0 else 0
         
     foreigner, institutional, retail = flow_data
     
+    # 수급 데이터 유효성 체크 (KRX 서버 점검 시 모두 0)
+    flow_valid = not (foreigner == 0 and institutional == 0 and retail == 0)
+    
     # 시나리오 기계적 판별
-    # 환율 상승 + 금리 상승 -> 강달러 리스크 오프
-    # 외국인 매수 -> 자금 유입
-    if usdkrw_change < 0 and tnx_change < 0 and foreigner > 0:
-        phase = "🟢 리스크 온 (강한 외국인 자금 유입)"
-    elif usdkrw_change > 0 and tnx_change > 0 and foreigner < 0:
-        phase = "🔴 리스크 오프 (안전자산 선호 및 외국인 이탈)"
-    elif foreigner > 0:
-        phase = "🟡 개별 종목 장세 (매크로 혼조 속 외국인 매수)"
-    elif foreigner < 0:
-        phase = "🟡 조정 장세 (외국인 차익 실현 및 매도 우위)"
+    if flow_valid:
+        if usdkrw_change < 0 and tnx_change < 0 and foreigner > 0:
+            phase = "🟢 리스크 온 (강한 외국인 자금 유입)"
+        elif usdkrw_change > 0 and tnx_change > 0 and foreigner < 0:
+            phase = "🔴 리스크 오프 (안전자산 선호 및 외국인 이탈)"
+        elif foreigner > 0:
+            phase = "🟡 개별 종목 장세 (매크로 혼조 속 외국인 매수)"
+        elif foreigner < 0:
+            phase = "🟡 조정 장세 (외국인 차익 실현 및 매도 우위)"
+        else:
+            phase = "⚪ 방향성 탐색 (눈치 보기 장세)"
     else:
         phase = "⚪ 방향성 탐색 (눈치 보기 장세)"
+    
+    # 수급 라벨: 양수→순매수, 음수→순매도
+    def _flow_label(val):
+        if not flow_valid:
+            return "⚠️ 점검 중"
+        if val >= 0:
+            return f"+{val:,}억원"
+        else:
+            return f"{val:,}억원"
+    
+    # extra_data에서 추가 지표 추출
+    ed = extra_data or {}
+    cnn_score = ed.get('cnn_score')
+    cnn_rating = ed.get('cnn_rating', 'N/A')
         
     summary_dict = {
         "TNX_10Y": f"{tnx_current:.3f}% (전일대비 {tnx_change:+.3f}%p)",
         "WTI_Crude": f"${wti_current:.2f} (전일대비 {wti_change:+.2f}$)",
         "USD_KRW": f"{usdkrw_current:.1f}원 (전일대비 {usdkrw_change:+.1f}원)",
-        "Foreigner": f"{foreigner:,}억원",
-        "Institutional": f"{institutional:,}억원",
-        "Retail": f"{retail:,}억원"
+        "Foreigner": _flow_label(foreigner),
+        "Institutional": _flow_label(institutional),
+        "Retail": _flow_label(retail),
+        "Foreigner_raw": foreigner,
+        "Institutional_raw": institutional,
+        "Retail_raw": retail,
+        "flow_valid": flow_valid,
+        # 추가 지표
+        "VIX": f"{vix_current:.2f} (전일대비 {vix_change:+.2f})",
+        "SPY": f"${spy_current:,.2f} ({spy_pct:+.2f}%)",
+        "KOSPI": f"{kospi_current:,.2f} ({kospi_pct:+.2f}%)",
+        "CNN_FG": f"{cnn_score}/100 ({cnn_rating})" if cnn_score is not None else "N/A",
     }
     
     return phase, summary_dict
@@ -1175,27 +1203,45 @@ def generate_economic_commentary(summary_dict, phase):
     if not api_key:
         return "⚠️ 환경 변수에 GEMINI_API_KEY가 설정되지 않아 AI 브리핑을 제공할 수 없습니다."
     
-    # 새 SDK(google-genai) 시도 → 실패 시 구 SDK(google-generativeai) 시도
-    prompt = f"""
-    너는 CFO 역할을 맡은 거시경제 전문가다. 
-    아래 전달받은 데이터(수치)와 시장 국면(판단 결과)을 임의로 수정하지 마라.
-    대신 [미국 금리/유가 동향 ➔ 달러 가치(환율) 변화 ➔ 외국인 자금의 한국 시장 유입/이탈 ➔ 개인/기관의 대응]으로 이어지는 '돈의 흐름과 경제 상황'을 인과관계에 맞게 3~4문장으로 알기 쉽게 해설해라.
+    # 수급 데이터 유효성에 따라 프롬프트 분기
+    flow_valid = summary_dict.get('flow_valid', True)
+    
+    if flow_valid:
+        flow_section = f"""[코스피 투자자별 수급]
+    - 외국인: {summary_dict['Foreigner']} (양수=순매수, 음수=순매도)
+    - 기관합계: {summary_dict['Institutional']}
+    - 개인: {summary_dict['Retail']}"""
+        flow_instruction = "외국인/기관/개인의 순매수·순매도 방향과 금액을 반드시 해설에 포함해라."
+    else:
+        flow_section = "[코스피 투자자별 수급]\n    - ⚠️ KRX 서버 점검 중으로 수급 데이터 미수신 (0원 표시는 실제 거래량이 아님)"
+        flow_instruction = "수급 데이터가 점검 중이므로 투자자 매매 관련 해설은 생략하고, 매크로 지표 해설에 집중해라."
+    
+    prompt = f"""너는 CFO 역할을 맡은 거시경제 전문가다.
+아래 전달받은 데이터(수치)와 시장 국면(판단 결과)을 임의로 수정하지 마라.
+[미국 금리·유가·VIX 동향 ➔ 달러 가치(환율) 변화 ➔ 미국/한국 증시 영향 ➔ 외국인 자금 흐름 ➔ 지금 유리한 전략]으로 이어지는 '돈의 흐름과 경제 상황'을 인과관계에 맞게 해설해라.
 
-    [시장 데이터]
+[글로벌 매크로 지표]
     - 미국 10년물 국채 금리: {summary_dict['TNX_10Y']}
     - WTI 원유: {summary_dict['WTI_Crude']}
     - 원/달러 환율: {summary_dict['USD_KRW']}
-    
-    [코스피 수급 (순매수)]
-    - 외국인: {summary_dict['Foreigner']}
-    - 기관합계: {summary_dict['Institutional']}
-    - 개인: {summary_dict['Retail']}
-    
-    [시스템이 판정한 현재 시장 국면]
+    - VIX 공포지수: {summary_dict.get('VIX', 'N/A')}
+    - CNN Fear & Greed 지수: {summary_dict.get('CNN_FG', 'N/A')}
+
+[주요 지수]
+    - S&P 500: {summary_dict.get('SPY', 'N/A')}
+    - KOSPI: {summary_dict.get('KOSPI', 'N/A')}
+
+{flow_section}
+
+[시스템이 판정한 현재 시장 국면]
     - {phase}
-    
-    오직 해설 텍스트만 3~4문장으로 작성해. 불필요한 인사말이나 마크다운 포맷팅은 제외해.
-    """
+
+[작성 규칙]
+1. {flow_instruction}
+2. 4~5문장으로 작성해라.
+3. 마지막 문장은 반드시 "따라서 현재 구간에서는 ~전략이 유리합니다." 형태로 투자 전략 한 줄 요약을 넣어라.
+4. 불필요한 인사말이나 마크다운 포맷팅은 제외해라.
+"""
     
     # 방법 1: 새 SDK (google-genai)
     try:

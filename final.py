@@ -724,7 +724,14 @@ with tab2:
     
     # 데이터 수집
     flow_data = get_investor_flow()  # (외국인, 기관, 개인)
-    phase, summary_dict = analyze_macro_flow(macro_charts, flow_data)
+    
+    # AI 브리핑을 위한 추가 데이터 구성
+    extra_data = {
+        'cnn_score': cnn_score,
+        'cnn_rating': cnn_rating,
+    }
+    
+    phase, summary_dict = analyze_macro_flow(macro_charts, flow_data, extra_data=extra_data)
     
     # 3x2 Grid 레이아웃 (매크로 3개, 수급 3개)
     m_col1, m_col2, m_col3 = st.columns(3)
@@ -733,10 +740,30 @@ with tab2:
     m_col3.metric("💵 원/달러 환율", summary_dict['USD_KRW'].split(' (')[0], summary_dict['USD_KRW'].split(' (')[1].replace(')',''), delta_color="inverse")
     
     f_col1, f_col2, f_col3 = st.columns(3)
-    # 수급은 매수(+)가 초록색, 매도(-)가 빨간색 (normal)
-    f_col1.metric("👤 외국인 순매수", summary_dict['Foreigner'], "매수" if flow_data[0] >= 0 else "매도")
-    f_col2.metric("🏢 기관 순매수", summary_dict['Institutional'], "매수" if flow_data[1] >= 0 else "매도")
-    f_col3.metric("🧑 개인 순매수", summary_dict['Retail'], "매수" if flow_data[2] >= 0 else "매도")
+    
+    if summary_dict.get('flow_valid', True):
+        def _get_metric_args(val):
+            return {
+                "label": "순매수" if val >= 0 else "순매도",
+                "delta": "순매수" if val >= 0 else "-순매도"
+            }
+            
+        f_col1.metric(f"👤 외국인 {_get_metric_args(summary_dict['Foreigner_raw'])['label']}", 
+                      summary_dict['Foreigner'], 
+                      _get_metric_args(summary_dict['Foreigner_raw'])['delta'])
+        
+        f_col2.metric(f"🏢 기관 {_get_metric_args(summary_dict['Institutional_raw'])['label']}", 
+                      summary_dict['Institutional'], 
+                      _get_metric_args(summary_dict['Institutional_raw'])['delta'])
+        
+        f_col3.metric(f"🧑 개인 {_get_metric_args(summary_dict['Retail_raw'])['label']}", 
+                      summary_dict['Retail'], 
+                      _get_metric_args(summary_dict['Retail_raw'])['delta'])
+    else:
+        # 데이터가 모두 0일 때 (KRX 시스템 점검 등)
+        f_col1.metric("👤 외국인 수급", "⚠️ 점검 중", "데이터 없음", delta_color="off")
+        f_col2.metric("🏢 기관 수급", "⚠️ 점검 중", "데이터 없음", delta_color="off")
+        f_col3.metric("🧑 개인 수급", "⚠️ 점검 중", "데이터 없음", delta_color="off")
     
     st.markdown("<br>", unsafe_allow_html=True)
     
