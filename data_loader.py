@@ -185,8 +185,6 @@ def build_vkospi_proxy(kospi_df):
     return pd.DataFrame({"Close": rv}).dropna()
 
 
-from pykrx import stock
-
 @st.cache_data(ttl=598)  # 캐시 무효화를 위해 ttl 1초 변경
 def get_macro_charts():
     result = {}
@@ -259,10 +257,12 @@ def get_macro_charts():
 @st.cache_data(ttl=600)
 def get_investor_flow():
     """
-    pykrx를 이용하여 최근 거래일의 코스피 투자자별 순매수 대금(단위: 억 원)을 반환.
-    반환값: (외국인, 기관합계, 개인)
+    pykrx를 이용하여 최근 거래일의 코스피 투자자별 순매수액(단위: 억 원)을 반환.
+    반환값: (외국인, 기관, 개인)
     """
     try:
+        from pykrx import stock
+        import datetime
         now = get_kst_now()
         for days_back in range(5):
             target_date = (now - datetime.timedelta(days=days_back)).strftime('%Y%m%d')
