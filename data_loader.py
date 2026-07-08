@@ -283,6 +283,31 @@ def get_investor_flow():
         pass
     return 0, 0, 0
 
+@st.cache_data(ttl=3600)
+def get_1m_investor_flow():
+    """
+    pykrx를 이용하여 최근 1개월(30일)간의 코스피 투자자별 누적 순매수액(단위: 억 원)을 반환.
+    반환값: (외국인, 기관, 개인)
+    """
+    try:
+        from pykrx import stock
+        import datetime
+        now = get_kst_now()
+        to_date = now.strftime('%Y%m%d')
+        from_date = (now - datetime.timedelta(days=30)).strftime('%Y%m%d')
+        
+        df = stock.get_market_trading_value_by_investor(from_date, to_date, "KOSPI")
+        if not df.empty and '순매수거래대금' in df.columns:
+            foreigner = int(df.loc['외국인', '순매수거래대금'] / 100000000) if '외국인' in df.index else 0
+            institutional = int(df.loc['기관합계', '순매수거래대금'] / 100000000) if '기관합계' in df.index else 0
+            retail = int(df.loc['개인', '순매수거래대금'] / 100000000) if '개인' in df.index else 0
+            
+            return foreigner, institutional, retail
+    except Exception as e:
+        print(f"pykrx 1m error: {e}")
+        pass
+    return 0, 0, 0
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(fetch_macro, k, v) for k, v in tickers.items()]
         for future in concurrent.futures.as_completed(futures):

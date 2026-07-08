@@ -1172,6 +1172,19 @@ def analyze_macro_flow(macro_data, flow_data, extra_data=None):
     ed = extra_data or {}
     cnn_score = ed.get('cnn_score')
     cnn_rating = ed.get('cnn_rating', 'N/A')
+    flow_1m = ed.get('flow_1m', (0, 0, 0))
+    f_1m, i_1m, r_1m = flow_1m
+    
+    # 1개월 수급 유효성 체크
+    flow_1m_valid = not (f_1m == 0 and i_1m == 0 and r_1m == 0)
+    
+    def _flow_label_1m(val):
+        if not flow_1m_valid:
+            return "⚠️ 점검 중"
+        if val >= 0:
+            return f"+{val:,}억원"
+        else:
+            return f"{val:,}억원"
         
     summary_dict = {
         "TNX_10Y": f"{tnx_current:.3f}% (전일대비 {tnx_change:+.3f}%p)",
@@ -1184,6 +1197,12 @@ def analyze_macro_flow(macro_data, flow_data, extra_data=None):
         "Institutional_raw": institutional,
         "Retail_raw": retail,
         "flow_valid": flow_valid,
+        
+        "Foreigner_1m": _flow_label_1m(f_1m),
+        "Institutional_1m": _flow_label_1m(i_1m),
+        "Retail_1m": _flow_label_1m(r_1m),
+        "flow_1m_valid": flow_1m_valid,
+        
         # 추가 지표
         "VIX": f"{vix_current:.2f} (전일대비 {vix_change:+.2f})",
         "SPY": f"${spy_current:,.2f} ({spy_pct:+.2f}%)",
@@ -1205,15 +1224,22 @@ def generate_economic_commentary(summary_dict, phase):
     
     # 수급 데이터 유효성에 따라 프롬프트 분기
     flow_valid = summary_dict.get('flow_valid', True)
+    flow_1m_valid = summary_dict.get('flow_1m_valid', True)
     
-    if flow_valid:
-        flow_section = f"""[코스피 투자자별 수급]
-    - 외국인: {summary_dict['Foreigner']} (양수=순매수, 음수=순매도)
+    if flow_valid or flow_1m_valid:
+        flow_section = f"""[코스피 투자자별 수급 (양수=순매수, 음수=순매도)]
+    (1) 오늘(당일) 수급
+    - 외국인: {summary_dict['Foreigner']}
     - 기관합계: {summary_dict['Institutional']}
-    - 개인: {summary_dict['Retail']}"""
-        flow_instruction = "외국인/기관/개인의 순매수·순매도 방향과 금액을 반드시 해설에 포함해라."
+    - 개인: {summary_dict['Retail']}
+    
+    (2) 최근 1개월(30일) 누적 수급
+    - 외국인: {summary_dict.get('Foreigner_1m', 'N/A')}
+    - 기관합계: {summary_dict.get('Institutional_1m', 'N/A')}
+    - 개인: {summary_dict.get('Retail_1m', 'N/A')}"""
+        flow_instruction = "당일의 단기적 수급과 1개월의 중기적 누적 수급 트렌드를 비교하여 굵직한 돈의 흐름을 분석해라."
     else:
-        flow_section = "[코스피 투자자별 수급]\n    - ⚠️ KRX 서버 점검 중으로 수급 데이터 미수신 (0원 표시는 실제 거래량이 아님)"
+        flow_section = "[코스피 투자자별 수급]\n    - ⚠️ KRX 서버 점검 중으로 당일 및 1개월 수급 데이터 미수신 (0원 표시는 실제 거래량이 아님)"
         flow_instruction = "수급 데이터가 점검 중이므로 투자자 매매 관련 해설은 생략하고, 매크로 지표 해설에 집중해라."
     
     prompt = f"""너는 CFO 역할을 맡은 거시경제 전문가다.

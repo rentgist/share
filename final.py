@@ -12,7 +12,8 @@ from data_loader import (
     get_sector_baseline, 
     get_stock_data,
     get_upcoming_events,
-    get_investor_flow
+    get_investor_flow,
+    get_1m_investor_flow
 )
 import sys
 if "signals" in sys.modules:
@@ -724,11 +725,13 @@ with tab2:
     
     # 데이터 수집
     flow_data = get_investor_flow()  # (외국인, 기관, 개인)
+    flow_1m = get_1m_investor_flow()
     
     # AI 브리핑을 위한 추가 데이터 구성
     extra_data = {
         'cnn_score': cnn_score,
         'cnn_rating': cnn_rating,
+        'flow_1m': flow_1m,
     }
     
     phase, summary_dict = analyze_macro_flow(macro_charts, flow_data, extra_data=extra_data)
