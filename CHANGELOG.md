@@ -22,3 +22,8 @@
 ### 3. 미세 조정 내역 (Pro-Tip 적용)
 - `alert_bot.py` 코드 최상단에 `os.environ['TZ'] = 'Asia/Seoul'` 타임존 강제 할당 (깃허브 액션 서버의 날짜 착각 방지).
 - 텔레그램 메시지 전송 시 HTML 파싱 에러 발생 시를 대비한 `try-except` 일반 텍스트 재전송 로직(`parse_mode=None`) 방어막 적용.
+
+### 4. 긴급 버그 픽스 및 안정화 (방금 반영됨)
+- **Streamlit Cloud 치명적 오류 방어 (`data_loader.py`)**: `pykrx` 라이브러리의 `pkg_resources` 의존성 문제로 인해 클라우드 서버에서 앱 전체가 다운(Crash)되는 현상 발생. 이를 해결하기 위해 `requirements.txt` 최상단에 `setuptools`를 명시하고, 파일 최상단의 글로벌 임포트(Global Import)를 제거한 뒤 `get_investor_flow` 함수 내부의 `try-except` 블록 안으로 로컬 임포트(Local Import) 위치 변경. (에러 발생 시 부드럽게 무시하고 나머지 앱은 100% 정상 작동하도록 무적 방패 적용)
+- **환율 '+nan원' 및 '+nan%' 표기 오류 해결 (`final.py`, `signals.py`)**: 야후 파이낸스(Yahoo Finance)에서 주말/공휴일 등 비어있는(NaN) 데이터를 반환할 경우 등락률 및 변동폭 계산이 꼬이는 문제 발생. 데이터 프레임에서 `dropna()` 필터를 통해 가장 마지막으로 유효한(시장에서 실제로 거래된) 진짜 가격만을 추출하여 계산하도록 로직 수정.
+- **Gemini AI '404 Not Found' 에러 해결 (`alert_bot.py`, `signals.py`)**: 구글 API의 모델 네이밍 규칙 변경으로 인해 기존 `gemini-1.5-pro` 호출 시 버전 호환성 에러 발생. 구글 권장 방식인 `gemini-1.5-pro-latest`로 모델 호출명을 일괄 변경하여 안정적인 AI 텍스트 생성 보장.
