@@ -1166,7 +1166,6 @@ def generate_economic_commentary(summary_dict, phase):
     import os
     try:
         import google.generativeai as genai
-        from google.generativeai.types import HarmCategory, HarmBlockThreshold
     except ImportError:
         return "⚠️ google-generativeai 패키지가 설치되지 않았습니다."
         
@@ -1199,16 +1198,19 @@ def generate_economic_commentary(summary_dict, phase):
         오직 해설 텍스트만 3~4문장으로 작성해. 불필요한 인사말이나 마크다운 포맷팅은 제외해.
         """
         
-        safety_settings = {
-            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-        }
+        safety_settings = [
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+        ]
         
         response = model.generate_content(prompt, safety_settings=safety_settings)
         return response.text.strip()
     except Exception as e:
+        import traceback
+        err_msg = traceback.format_exc()
+        print(f"❌ AI 해설 생성 중 오류 발생:\n{err_msg}")
         return f"⚠️ AI 해설 생성 중 오류 발생: {e}"
 
 

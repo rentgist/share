@@ -10,3 +10,4 @@ requests-cache
 
 google-generativeai
 pykrx
+setuptools

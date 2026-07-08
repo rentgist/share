@@ -203,13 +203,12 @@ def analyze_with_gemini(
         model   = genai.GenerativeModel("gemini-1.5-pro")
         
         # 유해 콘텐츠 필터 강제 해제 (마켓 뉴스 키워드 차단 방지)
-        from google.generativeai.types import HarmCategory, HarmBlockThreshold
-        safety_settings = {
-            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-        }
+        safety_settings = [
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+        ]
         
         response = model.generate_content(full_prompt, safety_settings=safety_settings)
         text = response.text.strip()
@@ -222,7 +221,9 @@ def analyze_with_gemini(
         return text.strip()
 
     except Exception as e:
-        print(f"❌ Gemini 호출 실패: {e}")
+        import traceback
+        err_msg = traceback.format_exc()
+        print(f"❌ Gemini 호출 실패:\n{err_msg}")
         return (
             "⚠️ <b>[AI 분석 오류]</b>\n\n"
             + code_judgment.replace("<", "&lt;").replace(">", "&gt;")
