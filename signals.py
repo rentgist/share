@@ -1181,7 +1181,7 @@ def generate_economic_commentary(summary_dict, phase):
         
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-1.5-pro-latest")
+        model = genai.GenerativeModel("gemini-pro")
         
         prompt = f"""
         너는 CFO 역할을 맡은 거시경제 전문가다. 
