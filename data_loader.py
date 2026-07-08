@@ -185,6 +185,8 @@ def build_vkospi_proxy(kospi_df):
     return pd.DataFrame({"Close": rv}).dropna()
 
 
+from pykrx import stock
+
 @st.cache_data(ttl=598)  # 캐시 무효화를 위해 ttl 1초 변경
 def get_macro_charts():
     result = {}
@@ -195,7 +197,9 @@ def get_macro_charts():
         "hyg_10y": "HYG",
         "ief_10y": "IEF",
         "rsp_10y": "RSP",
-        "vkospi_10y": "^VKOSPI"
+        "vkospi_10y": "^VKOSPI",
+        "tnx_10y": "^TNX",
+        "wti_10y": "CL=F"
     }
     def fetch_macro(k, v):
         try:
@@ -206,6 +210,78 @@ def get_macro_charts():
         except Exception:
             pass
         return k, pd.DataFrame()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(fetch_macro, k, v) for k, v in tickers.items()]
+        for future in concurrent.futures.as_completed(futures):
+            k, df = future.result()
+            result[k] = df
+
+    # KOSPI 및 환율은 실시간성이 더 좋은 FinanceDataReader(fdr) 사용
+    start_10y = (pd.Timestamp.now() - pd.DateOffset(years=10)).strftime('%Y-%m-%d')
+    try:
+        df_kospi = fetch_fdr_history("KS11", start_10y)
+        if not df_kospi.empty:
+            df_kospi.index = pd.to_datetime(df_kospi.index).tz_localize(None).normalize()
+            result["kospi_10y"] = df_kospi[~df_kospi.index.duplicated(keep='last')]
+    except Exception:
+        result["kospi_10y"] = pd.DataFrame()
+
+    try:
+        df_usdkrw = fetch_fdr_history("USD/KRW", start_10y)
+        if not df_usdkrw.empty:
+            df_usdkrw.index = pd.to_datetime(df_usdkrw.index).tz_localize(None).normalize()
+            result["usdkrw_10y"] = df_usdkrw[~df_usdkrw.index.duplicated(keep='last')]
+    except Exception:
+        result["usdkrw_10y"] = pd.DataFrame()
+
+    # ── VKOSPI 3단 폴백 체인 ──
+    vkospi_source = "yfinance (^VKOSPI)"
+    if result.get("vkospi_10y", pd.DataFrame()).empty:
+        try:
+            vk = fetch_vkospi_krx()
+            vk.index = pd.to_datetime(vk.index).normalize()
+            result["vkospi_10y"] = vk
+            vkospi_source = "KRX 정보데이터시스템 직조회"
+        except Exception:
+            pass
+    if result.get("vkospi_10y", pd.DataFrame()).empty:
+        proxy = build_vkospi_proxy(result.get("kospi_10y", pd.DataFrame()))
+        if not proxy.empty:
+            result["vkospi_10y"] = proxy
+            vkospi_source = "프록시 (KOSPI 실현변동성 EWMA·20일 병행, 과거 수익률 기반 후행지표)"
+        else:
+            vkospi_source = "없음 (전체 소스 실패)"
+    result["vkospi_source"] = vkospi_source
+
+    return result
+
+@st.cache_data(ttl=600)
+def get_investor_flow():
+    """
+    pykrx를 이용하여 최근 거래일의 코스피 투자자별 순매수 대금(단위: 억 원)을 반환.
+    반환값: (외국인, 기관합계, 개인)
+    """
+    try:
+        now = get_kst_now()
+        for days_back in range(5):
+            target_date = (now - datetime.timedelta(days=days_back)).strftime('%Y%m%d')
+            df = stock.get_market_trading_value_by_investor(target_date, target_date, "KOSPI")
+            if not df.empty and '순매수거래대금' in df.columns:
+                # pykrx의 순매수거래대금 단위는 원(KRW)이므로 억 원 단위로 변환
+                foreigner = int(df.loc['외국인', '순매수거래대금'] / 100000000) if '외국인' in df.index else 0
+                institutional = int(df.loc['기관합계', '순매수거래대금'] / 100000000) if '기관합계' in df.index else 0
+                retail = int(df.loc['개인', '순매수거래대금'] / 100000000) if '개인' in df.index else 0
+                
+                # 데이터가 모두 0이면 휴일이거나 아직 장 시작 전일 확률이 높음 -> 하루 더 과거로
+                if foreigner == 0 and institutional == 0 and retail == 0:
+                    continue
+                    
+                return foreigner, institutional, retail
+    except Exception as e:
+        print(f"pykrx error: {e}")
+        pass
+    return 0, 0, 0
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(fetch_macro, k, v) for k, v in tickers.items()]

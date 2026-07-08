@@ -9,3 +9,4 @@ altair
 requests-cache
 
 google-generativeai
+pykrx

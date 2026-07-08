@@ -11,7 +11,8 @@ from data_loader import (
     get_macro_charts, 
     get_sector_baseline, 
     get_stock_data,
-    get_upcoming_events
+    get_upcoming_events,
+    get_investor_flow
 )
 import sys
 if "signals" in sys.modules:
@@ -36,7 +37,9 @@ try:
         relative_strength_label,
         get_ai_signal,
         calculate_smart_target,
-        get_tenbagger_signal
+        get_tenbagger_signal,
+        analyze_macro_flow,
+        generate_economic_commentary
     )
 except ImportError as e:
     st.error(f"🚨 ImportError 발생: {e}")
@@ -710,6 +713,35 @@ with tab2:
         st.caption("25 이하 = 극단적 공포 (역발상 매수 구간) | 75 이상 = 극단적 탐욕 (현금 확보 구간). CNN 서버 정책상 최대 제공 기간이 1~2년으로 제한될 수 있습니다.")
     else:
         st.warning("⚠️ CNN 서버 차단 중. 잠시 후 새로고침 해주세요.")
+        
+    st.divider()
+    st.subheader("💡 글로벌 매크로 & 수급 통합 AI 브리핑")
+    
+    # 데이터 수집
+    flow_data = get_investor_flow()  # (외국인, 기관, 개인)
+    phase, summary_dict = analyze_macro_flow(macro_charts, flow_data)
+    
+    # 3x2 Grid 레이아웃 (매크로 3개, 수급 3개)
+    m_col1, m_col2, m_col3 = st.columns(3)
+    m_col1.metric("🇺🇸 국채 10년물 금리", summary_dict['TNX_10Y'].split(' (')[0], summary_dict['TNX_10Y'].split(' (')[1].replace(')','').replace('p',''), delta_color="inverse")
+    m_col2.metric("🛢️ WTI 원유", summary_dict['WTI_Crude'].split(' (')[0], summary_dict['WTI_Crude'].split(' (')[1].replace(')',''), delta_color="inverse")
+    m_col3.metric("💵 원/달러 환율", summary_dict['USD_KRW'].split(' (')[0], summary_dict['USD_KRW'].split(' (')[1].replace(')',''), delta_color="inverse")
+    
+    f_col1, f_col2, f_col3 = st.columns(3)
+    # 수급은 매수(+)가 초록색, 매도(-)가 빨간색 (normal)
+    f_col1.metric("👤 외국인 순매수", summary_dict['Foreigner'], "매수" if flow_data[0] >= 0 else "매도")
+    f_col2.metric("🏢 기관 순매수", summary_dict['Institutional'], "매수" if flow_data[1] >= 0 else "매도")
+    f_col3.metric("🧑 개인 순매수", summary_dict['Retail'], "매수" if flow_data[2] >= 0 else "매도")
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    with st.spinner("거시경제 CFO AI가 시장 흐름을 분석하고 있습니다..."):
+        ai_commentary = generate_economic_commentary(summary_dict, phase)
+        
+    if "⚠️" in ai_commentary:
+        st.error(ai_commentary)
+    else:
+        st.info(f"**[CFO 통합 브리핑] {phase}**\n\n{ai_commentary}")
 
 with tab4:
     st.subheader("🚀 섹터별 텐배거 마스터 레이더 (미래 지표 및 트렌드 필터)")

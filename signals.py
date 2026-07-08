@@ -1108,6 +1108,110 @@ def normalize_title(raw_title: str) -> str:
     return raw_title.strip()
 
 
+def analyze_macro_flow(macro_data, flow_data):
+    """
+    수집된 매크로 지표(금리, 유가, 환율)와 수급(외국인 등)을 교차 분석하여 국면(Phase) 확정.
+    """
+    tnx_df = macro_data.get('tnx_10y', None)
+    wti_df = macro_data.get('wti_10y', None)
+    usdkrw_df = macro_data.get('usdkrw_10y', None)
+    
+    # 최근 2거래일 데이터 추출
+    tnx_current, tnx_change = 0, 0
+    if tnx_df is not None and not tnx_df.empty and len(tnx_df) >= 2:
+        tnx_current = tnx_df['Close'].iloc[-1]
+        tnx_change = tnx_current - tnx_df['Close'].iloc[-2]
+        
+    wti_current, wti_change = 0, 0
+    if wti_df is not None and not wti_df.empty and len(wti_df) >= 2:
+        wti_current = wti_df['Close'].iloc[-1]
+        wti_change = wti_current - wti_df['Close'].iloc[-2]
+        
+    usdkrw_current, usdkrw_change = 0, 0
+    if usdkrw_df is not None and not usdkrw_df.empty and len(usdkrw_df) >= 2:
+        usdkrw_current = usdkrw_df['Close'].iloc[-1]
+        usdkrw_change = usdkrw_current - usdkrw_df['Close'].iloc[-2]
+        
+    foreigner, institutional, retail = flow_data
+    
+    # 시나리오 기계적 판별
+    # 환율 상승 + 금리 상승 -> 강달러 리스크 오프
+    # 외국인 매수 -> 자금 유입
+    if usdkrw_change < 0 and tnx_change < 0 and foreigner > 0:
+        phase = "🟢 리스크 온 (강한 외국인 자금 유입)"
+    elif usdkrw_change > 0 and tnx_change > 0 and foreigner < 0:
+        phase = "🔴 리스크 오프 (안전자산 선호 및 외국인 이탈)"
+    elif foreigner > 0:
+        phase = "🟡 개별 종목 장세 (매크로 혼조 속 외국인 매수)"
+    elif foreigner < 0:
+        phase = "🟡 조정 장세 (외국인 차익 실현 및 매도 우위)"
+    else:
+        phase = "⚪ 방향성 탐색 (눈치 보기 장세)"
+        
+    summary_dict = {
+        "TNX_10Y": f"{tnx_current:.3f}% (전일대비 {tnx_change:+.3f}%p)",
+        "WTI_Crude": f"${wti_current:.2f} (전일대비 {wti_change:+.2f}$)",
+        "USD_KRW": f"{usdkrw_current:.1f}원 (전일대비 {usdkrw_change:+.1f}원)",
+        "Foreigner": f"{foreigner:,}억원",
+        "Institutional": f"{institutional:,}억원",
+        "Retail": f"{retail:,}억원"
+    }
+    
+    return phase, summary_dict
+
+def generate_economic_commentary(summary_dict, phase):
+    """
+    코드가 판정한 데이터와 국면을 Gemini API에 던져 자연어 해설 생성.
+    """
+    import os
+    try:
+        import google.generativeai as genai
+        from google.generativeai.types import HarmCategory, HarmBlockThreshold
+    except ImportError:
+        return "⚠️ google-generativeai 패키지가 설치되지 않았습니다."
+        
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        return "⚠️ 환경 변수에 GEMINI_API_KEY가 설정되지 않아 AI 브리핑을 제공할 수 없습니다."
+        
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-1.5-pro")
+        
+        prompt = f"""
+        너는 CFO 역할을 맡은 거시경제 전문가다. 
+        아래 전달받은 데이터(수치)와 시장 국면(판단 결과)을 임의로 수정하지 마라.
+        대신 [미국 금리/유가 동향 ➔ 달러 가치(환율) 변화 ➔ 외국인 자금의 한국 시장 유입/이탈 ➔ 개인/기관의 대응]으로 이어지는 '돈의 흐름과 경제 상황'을 인과관계에 맞게 3~4문장으로 알기 쉽게 해설해라.
+
+        [시장 데이터]
+        - 미국 10년물 국채 금리: {summary_dict['TNX_10Y']}
+        - WTI 원유: {summary_dict['WTI_Crude']}
+        - 원/달러 환율: {summary_dict['USD_KRW']}
+        
+        [코스피 수급 (순매수)]
+        - 외국인: {summary_dict['Foreigner']}
+        - 기관합계: {summary_dict['Institutional']}
+        - 개인: {summary_dict['Retail']}
+        
+        [시스템이 판정한 현재 시장 국면]
+        - {phase}
+        
+        오직 해설 텍스트만 3~4문장으로 작성해. 불필요한 인사말이나 마크다운 포맷팅은 제외해.
+        """
+        
+        safety_settings = {
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+        }
+        
+        response = model.generate_content(prompt, safety_settings=safety_settings)
+        return response.text.strip()
+    except Exception as e:
+        return f"⚠️ AI 해설 생성 중 오류 발생: {e}"
+
+
 def get_edgar_link(ticker: str) -> str:
     return (f"https://www.sec.gov/cgi-bin/browse-edgar"
             f"?action=getcompany&company={ticker}&type=4"
