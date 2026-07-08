@@ -324,9 +324,14 @@ with tab2:
 
     col1, col2, col3, col4 = st.columns(4)
     if not usd_krw.empty:
-        curr_usdkrw = round(float(usd_krw['Close'].iloc[-1]), 2)
-        usdkrw_change = round(((curr_usdkrw - float(usd_krw['Close'].iloc[-2])) / float(usd_krw['Close'].iloc[-2])) * 100, 2)
-        col1.metric("환율 (USD/KRW)", f"{curr_usdkrw:,.2f} 원", f"{usdkrw_change:+.2f}%")
+        usd_krw_clean = usd_krw['Close'].dropna()
+        if len(usd_krw_clean) >= 2:
+            curr_usdkrw = round(float(usd_krw_clean.iloc[-1]), 2)
+            prev_usdkrw = float(usd_krw_clean.iloc[-2])
+            usdkrw_change = round(((curr_usdkrw - prev_usdkrw) / prev_usdkrw) * 100, 2)
+            col1.metric("환율 (USD/KRW)", f"{curr_usdkrw:,.2f} 원", f"{usdkrw_change:+.2f}%")
+        else:
+            col1.metric("환율 (USD/KRW)", "N/A", "N/A")
     else:
         col1.metric("환율 (USD/KRW)", "N/A", "N/A")
         
