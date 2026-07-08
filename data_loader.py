@@ -257,30 +257,31 @@ def get_macro_charts():
 @st.cache_data(ttl=600)
 def get_investor_flow():
     """
-    pykrx를 이용하여 최근 거래일의 코스피 투자자별 순매수액(단위: 억 원)을 반환.
+    Naver 금융 KOSPI 페이지를 스크래핑하여 최근 거래일의 코스피 투자자별 순매수액(단위: 억 원)을 반환.
+    pykrx가 KRX 서버 개편 시 자주 고장나는 문제를 해결하기 위함.
     반환값: (외국인, 기관, 개인)
     """
+    import re
     try:
-        from pykrx import stock
-        import datetime
-        now = get_kst_now()
-        for days_back in range(5):
-            target_date = (now - datetime.timedelta(days=days_back)).strftime('%Y%m%d')
-            df = stock.get_market_trading_value_by_investor(target_date, target_date, "KOSPI")
-            if not df.empty and '순매수거래대금' in df.columns:
-                # pykrx의 순매수거래대금 단위는 원(KRW)이므로 억 원 단위로 변환
-                foreigner = int(df.loc['외국인', '순매수거래대금'] / 100000000) if '외국인' in df.index else 0
-                institutional = int(df.loc['기관합계', '순매수거래대금'] / 100000000) if '기관합계' in df.index else 0
-                retail = int(df.loc['개인', '순매수거래대금'] / 100000000) if '개인' in df.index else 0
-                
-                # 데이터가 모두 0이면 휴일이거나 아직 장 시작 전일 확률이 높음 -> 하루 더 과거로
-                if foreigner == 0 and institutional == 0 and retail == 0:
-                    continue
-                    
-                return foreigner, institutional, retail
+        url = 'https://finance.naver.com/sise/sise_index.naver?code=KOSPI'
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        res = requests.get(url, headers=headers, timeout=5)
+        html = res.content.decode('euc-kr', errors='replace')
+        
+        # 개인, 기관, 외국인 순서대로 매매동향 파싱 (단위: 억원)
+        # 예: <dd>개인 <span class="nv01">-842</span> 기관 <span class="nv01">-915</span> 외국인 <span class="nv01">-6</span></dd>
+        match = re.search(r'개인\s*<span[^>]*>([^<]+)</span>\s*기관\s*<span[^>]*>([^<]+)</span>\s*외국인\s*<span[^>]*>([^<]+)</span>', html)
+        
+        if match:
+            retail = int(match.group(1).replace(',', ''))
+            institutional = int(match.group(2).replace(',', ''))
+            foreigner = int(match.group(3).replace(',', ''))
+            
+            return foreigner, institutional, retail
     except Exception as e:
-        print(f"pykrx error: {e}")
+        print(f"investor flow error: {e}")
         pass
+    
     return 0, 0, 0
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
