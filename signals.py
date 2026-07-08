@@ -1118,19 +1118,25 @@ def analyze_macro_flow(macro_data, flow_data):
     
     # 최근 2거래일 데이터 추출
     tnx_current, tnx_change = 0, 0
-    if tnx_df is not None and not tnx_df.empty and len(tnx_df) >= 2:
-        tnx_current = tnx_df['Close'].iloc[-1]
-        tnx_change = tnx_current - tnx_df['Close'].iloc[-2]
+    if tnx_df is not None and not tnx_df.empty:
+        tnx_clean = tnx_df['Close'].dropna()
+        if len(tnx_clean) >= 2:
+            tnx_current = tnx_clean.iloc[-1]
+            tnx_change = tnx_current - tnx_clean.iloc[-2]
         
     wti_current, wti_change = 0, 0
-    if wti_df is not None and not wti_df.empty and len(wti_df) >= 2:
-        wti_current = wti_df['Close'].iloc[-1]
-        wti_change = wti_current - wti_df['Close'].iloc[-2]
+    if wti_df is not None and not wti_df.empty:
+        wti_clean = wti_df['Close'].dropna()
+        if len(wti_clean) >= 2:
+            wti_current = wti_clean.iloc[-1]
+            wti_change = wti_current - wti_clean.iloc[-2]
         
     usdkrw_current, usdkrw_change = 0, 0
-    if usdkrw_df is not None and not usdkrw_df.empty and len(usdkrw_df) >= 2:
-        usdkrw_current = usdkrw_df['Close'].iloc[-1]
-        usdkrw_change = usdkrw_current - usdkrw_df['Close'].iloc[-2]
+    if usdkrw_df is not None and not usdkrw_df.empty:
+        usdkrw_clean = usdkrw_df['Close'].dropna()
+        if len(usdkrw_clean) >= 2:
+            usdkrw_current = usdkrw_clean.iloc[-1]
+            usdkrw_change = usdkrw_current - usdkrw_clean.iloc[-2]
         
     foreigner, institutional, retail = flow_data
     
@@ -1175,7 +1181,7 @@ def generate_economic_commentary(summary_dict, phase):
         
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-1.5-pro")
+        model = genai.GenerativeModel("gemini-1.5-pro-latest")
         
         prompt = f"""
         너는 CFO 역할을 맡은 거시경제 전문가다. 
