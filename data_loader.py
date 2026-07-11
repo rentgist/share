@@ -8,6 +8,12 @@ import yfinance as yf
 import concurrent.futures
 import requests_cache
 
+# yfinance용 캐시 세션
+yf_session = requests_cache.CachedSession('yfinance.cache', expire_after=3600)
+
+import concurrent.futures
+import requests_cache
+
 # yfinance용 캐시 세션 (1시간 유지) - 429 Rate Limit 방지 및 속도 최적화
 yf_session = requests_cache.CachedSession('yfinance.cache', expire_after=3600)
 
@@ -109,6 +115,23 @@ def get_real_cnn_fg():
 # 폴백 체인: ① yfinance → ② KRX 정보데이터시스템 직조회 → ③ KOSPI 실현변동성 프록시
 # ─────────────────────────────────────────
 KRX_DATA_URL = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
+
+def get_exchange_rate(from_curr, to_curr):
+    if from_curr == to_curr:
+        return 1.0
+    try:
+        df = fdr.DataReader(f"{to_curr}/{from_curr}")
+        if not df.empty:
+            return float(df.tail(1)['Close'].iloc[0])
+    except Exception:
+        pass
+    try:
+        rate = yf.Ticker(f"{to_curr}{from_curr}=X").fast_info.last_price
+        if rate:
+            return float(rate)
+    except Exception:
+        pass
+    return 1.0
 
 def fetch_vkospi_krx(years=3):
     """
@@ -390,7 +413,178 @@ def fetch_ticker_info(tk):
 # ─────────────────────────────────────────
 # 개별 종목 데이터 (yfinance 병목 해결을 위한 retry 적용)
 # ─────────────────────────────────────────
-@st.cache_data(ttl=600) 
+@st.cache_data(ttl=43200)
+def _fetch_stock_financials_internal(ticker_str, is_kr, price_curr):
+    tk = yf.Ticker(ticker_str)
+    try:
+        info = fetch_ticker_info(tk)
+    except Exception:
+        info = {}
+
+    fin_curr = info.get('financialCurrency')
+    if not fin_curr:
+        ADR_CURRENCY_MAP = {
+            "TSM": "TWD", "ASML": "EUR", "BABA": "CNY", "JD": "CNY", "PDD": "CNY",
+            "NVO": "DKK", "AZN": "GBP", "TM": "JPY", "SONY": "JPY", "HDB": "INR", "IBN": "INR"
+        }
+        base_symbol = ticker_str.split('.')[0].upper()
+        fin_curr = ADR_CURRENCY_MAP.get(base_symbol, "KRW" if is_kr else "USD")
+
+    rate = 1.0
+    if fin_curr != price_curr:
+        rate = get_exchange_rate(fin_curr, price_curr)
+
+    inc = tk.financials
+    bs = tk.balance_sheet
+    cf = tk.cashflow
+
+    if not info and inc.empty and bs.empty:
+        raise ValueError("데이터 로드 실패 (Rate Limit 의심)")
+
+    def safe_val(df, row):
+        if df is not None and not df.empty and row in df.index:
+            val = df.loc[row].iloc[0]
+            return float(val) if pd.notna(val) else 0.0
+        return 0.0
+
+    rev_val = safe_val(inc, 'Total Revenue') / rate
+    gp_val = safe_val(inc, 'Gross Profit') / rate
+    op_inc = safe_val(inc, 'Operating Income') / rate
+    net_inc = safe_val(inc, 'Net Income') / rate
+
+    mcap = (info.get('marketCap') or tk.fast_info.market_cap or 0)
+    per_v = info.get('trailingPE')
+    fwd_per = info.get('forwardPE')
+    fwd_eps = info.get('forwardEps')
+    earn_g = info.get('earningsGrowth')
+    pbr_v = info.get('priceToBook')
+    roe_v = info.get('returnOnEquity')
+    op_m = info.get('operatingMargins')
+    peg_v = info.get('trailingPegRatio') or info.get('pegRatio')
+    rev_g = info.get('revenueGrowth')
+    gross_m = info.get('grossMargins')
+
+    if gross_m is None and gp_val and rev_val:
+        gross_m = gp_val / rev_val
+    if op_m is None and op_inc and rev_val:
+        op_m = op_inc / rev_val
+    if rev_g is None and 'Total Revenue' in inc.index:
+        rev_series = inc.loc['Total Revenue']
+        if len(rev_series) > 1 and rev_series.iloc[1] > 0:
+            rev_g = (rev_series.iloc[0] - rev_series.iloc[1]) / rev_series.iloc[1]
+
+    if roe_v is None and bs is not None and not bs.empty:
+        equity_val = safe_val(bs, 'Stockholders Equity') / rate
+        if net_inc and equity_val:
+            roe_v = net_inc / equity_val
+
+    # FCF Calculations
+    fcf = safe_val(cf, 'Free Cash Flow') / rate
+    fcf_yield = fcf / mcap if fcf and mcap else None
+
+    shares = info.get('sharesOutstanding') or tk.fast_info.shares or None
+    fcf_ps = fcf / shares if fcf and shares else None
+
+    rule_of_40 = (rev_g + op_m) * 100 if rev_g is not None and op_m is not None else None
+
+    total_debt = safe_val(bs, 'Total Debt') / rate
+    cash = (safe_val(bs, 'Cash Cash Equivalents And Short Term Investments') or safe_val(bs, 'Cash And Cash Equivalents')) / rate
+    ev = mcap + total_debt - cash
+
+    ev_ebitda = info.get('enterpriseToEbitda')
+    if ev_ebitda is None and ev:
+        ebitda = safe_val(inc, 'EBITDA') / rate
+        if ebitda and ebitda > 0:
+            ev_ebitda = ev / ebitda
+
+    ev_fcf = ev / fcf if ev and fcf and fcf > 0 else None
+
+    roic_v = None
+    if inc is not None and not inc.empty and bs is not None and not bs.empty:
+        try:
+            pre_tax = safe_val(inc, 'Pretax Income') / rate
+            tax_prov = safe_val(inc, 'Tax Provision') / rate
+            tax_rate = tax_prov / pre_tax if pre_tax and pre_tax > 0 else 0.21
+            tot_assets = safe_val(bs, 'Total Assets') / rate
+            cur_liab = (safe_val(bs, 'Current Liabilities') or safe_val(bs, 'Total Current Liabilities')) / rate
+            inv_cap = tot_assets - cur_liab
+            if inv_cap > 0 and pd.notna(op_inc):
+                roic_v = (op_inc * (1 - tax_rate)) / inv_cap
+        except Exception:
+            pass
+
+    buybacks_v = None
+    if cf is not None and not cf.empty:
+        for row_name in ['Repurchase Of Capital Stock', 'Repurchase Of Stock', 'Stock Repurchased']:
+            if row_name in cf.index:
+                val = cf.loc[row_name].iloc[0]
+                if pd.notna(val):
+                    buybacks_v = float(val) / rate
+                    break
+
+    next_earning = "N/A"
+    earnings_beat = "N/A"
+    if not is_kr:
+        try:
+            earns = tk.get_earnings_dates(limit=12)
+            beats, valid = 0, 0
+            if earns is not None and not earns.empty:
+                past = earns[earns.index < pd.Timestamp.now(tz='UTC')].head(8)
+                for _, row in past.iterrows():
+                    rep = row.get('Reported EPS')
+                    est = row.get('Estimate')
+                    if pd.notna(rep) and pd.notna(est):
+                        valid += 1
+                        if rep > est: beats += 1
+                if valid > 0:
+                    win_rate = (beats / valid) * 100
+                    earnings_beat = f"{valid}전 {beats}승 ({win_rate:.0f}%)"
+                future = earns[earns.index > pd.Timestamp.now(tz='UTC')].sort_index()
+                if not future.empty:
+                    next_earning = future.index[0].strftime('%Y-%m-%d')
+        except Exception:
+            pass
+
+    short_raw = info.get('shortPercentOfFloat')
+    beta_raw = info.get('beta')
+    short_label = short_interest_label(short_raw)
+
+    beta_str = "N/A"
+    if beta_raw:
+        tag = "🎢 고변동성" if beta_raw >= 1.2 else ("🛡️ 방어적" if beta_raw <= 0.8 else "⚖️ 시장수준")
+        beta_str = f"{beta_raw:.2f} ({tag})"
+
+    risk_grade = get_comprehensive_risk_grade(short_raw, beta_raw)
+
+    latest_news = "N/A"
+    try:
+        news_data = tk.news
+        if news_data:
+            latest_news = news_data[0].get('content', {}).get('title') or news_data[0].get('title', 'N/A')
+    except Exception:
+        pass
+
+    status, detail, edgar_url = parse_insider(tk, ticker_str)
+
+    return {
+        "MarketCap": mcap, "PER": per_v, "Forward_PER": fwd_per, "Forward_EPS": fwd_eps,
+        "Earnings_Growth": earn_g, "PBR": pbr_v, "ROE": roe_v, "Op_Margin": op_m,
+        "PEG": peg_v, "Rev_Growth": rev_g, "Gross_Margin": gross_m, "ROIC": roic_v,
+        "Buybacks": buybacks_v, "FCF_Yield": fcf_yield, "FCFPS": fcf_ps, "Rule_of_40": rule_of_40,
+        "EV_EBITDA": ev_ebitda, "EV_FCF": ev_fcf, "Earnings_Beat": earnings_beat,
+        "Next_Earning": next_earning, "Short_Interest": short_label, "Beta": beta_str,
+        "Risk_Grade": risk_grade, "Latest_News": latest_news, "Insider_Buy": status,
+        "Insider_Detail": detail, "Edgar_URL": edgar_url
+    }
+
+def fetch_stock_financials_cached(ticker_str, is_kr, price_curr):
+    try:
+        return _fetch_stock_financials_internal(ticker_str, is_kr, price_curr)
+    except Exception:
+        return {}
+
+@st.cache_data(ttl=300)
+@st.cache_data(ttl=300)
 def get_stock_data(query, is_kr=False, fast_mode=False):
     base = {"Name": query, "error": None}
     try:
@@ -402,36 +596,10 @@ def get_stock_data(query, is_kr=False, fast_mode=False):
             if kr_info: raw_code, yf_code = kr_info["raw_code"], kr_info["yf_code"]
             else:        raw_code, yf_code = query, f"{query}.KS"
             hist = fetch_fdr_history(raw_code, start=start).dropna()
-            tk   = yf.Ticker(yf_code)
             ticker_str = raw_code
         else:
             ticker_str = US_NAME_MAP.get(str(query).strip().upper(), query).upper()
-            tk         = yf.Ticker(ticker_str)
             hist       = fetch_ticker_history(ticker_str, period="1y").dropna()
-
-        # .info는 429가 가장 잘 터지는 구간 → 재시도 계층으로 감싸고,
-        # 최종 실패해도 가격/기술 지표는 살리는 Graceful Degradation
-        try:
-            info = fetch_ticker_info(tk)
-        except Exception:
-            info = {}
-
-        # yfinance .info Rate Limit (429) 우회용 2차 백업 (Financial Statements 기반 자동 복구)
-        financials_loaded = False
-        inc_fallback, bs_fallback, cf_fallback = None, None, None
-        if not info or len(info) <= 2:
-            try:
-                fast = tk.fast_info
-                if base.get("Price") is None:
-                    base["Price"] = int(fast.last_price) if is_kr else round(fast.last_price, 2)
-                base["MarketCap"] = fast.market_cap
-                # Load financials for backup calculations
-                inc_fallback = tk.financials
-                bs_fallback = tk.balance_sheet
-                cf_fallback = tk.cashflow
-                financials_loaded = True
-            except Exception:
-                pass
 
         if hist.empty or len(hist) < 30:
             base["error"] = "데이터 부족"
@@ -468,221 +636,29 @@ def get_stock_data(query, is_kr=False, fast_mode=False):
         base["MA20_gap"]  = round((price - ma20) / ma20 * 100, 2)
         base["_ticker"]   = ticker_str
 
-        t_eps = info.get('trailingEps')
-        f_eps = info.get('forwardEps')
-        is_turnaround = False
-        if t_eps is not None and f_eps is not None:
-            if float(t_eps) <= 0 and float(f_eps) > 0:
-                is_turnaround = True
-        base["Is_Turnaround"] = is_turnaround
-
-        def safe_val(df, row):
-            if df is not None and not df.empty and row in df.index:
-                val = df.loc[row].iloc[0]
-                return float(val) if pd.notna(val) else None
-            return None
-
-        # 기본 값 세팅
-        mcap = info.get('marketCap', 0) or base.get("MarketCap", 0)
-        per_v = info.get('trailingPE')
-        fwd_per = info.get('forwardPE')
-        fwd_eps = info.get('forwardEps')
-        earn_g = info.get('earningsGrowth')
-        pbr_v = info.get('priceToBook')
-        roe_v = info.get('returnOnEquity')
-        op_m = info.get('operatingMargins')
-        peg_v = info.get('trailingPegRatio') or info.get('pegRatio')
-        rev_g = info.get('revenueGrowth')
-        gross_m = info.get('grossMargins')
-
-        # 백업 계산기 가동 (info 누락 시)
-        if not info or len(info) <= 2:
-            if not financials_loaded:
-                try:
-                    inc_fallback = tk.financials
-                    bs_fallback = tk.balance_sheet
-                    cf_fallback = tk.cashflow
-                except Exception:
-                    pass
-            
-            inc, bs, cf = inc_fallback, bs_fallback, cf_fallback
-            if inc is not None and not inc.empty:
-                rev_val = safe_val(inc, 'Total Revenue')
-                gp_val = safe_val(inc, 'Gross Profit')
-                op_inc = safe_val(inc, 'Operating Income')
-                net_inc = safe_val(inc, 'Net Income')
-                
-                if gross_m is None and gp_val and rev_val:
-                    gross_m = gp_val / rev_val
-                if op_m is None and op_inc and rev_val:
-                    op_m = op_inc / rev_val
-                if rev_g is None and 'Total Revenue' in inc.index:
-                    rev_series = inc.loc['Total Revenue']
-                    if len(rev_series) > 1 and rev_series.iloc[1] > 0:
-                        rev_g = (rev_series.iloc[0] - rev_series.iloc[1]) / rev_series.iloc[1]
-                
-                # ROE 백업
-                if roe_v is None and bs is not None and not bs.empty:
-                    equity_val = safe_val(bs, 'Stockholders Equity')
-                    if net_inc and equity_val:
-                        roe_v = net_inc / equity_val
-                
-                # PER 백업
-                if per_v is None and net_inc:
-                    try:
-                        shares_val = tk.fast_info.shares
-                        if shares_val and net_inc > 0 and price:
-                            per_v = price / (net_inc / shares_val)
-                    except Exception:
-                        pass
-
-        base.update({
-            "MarketCap":       mcap,
-            "PER":             per_v,
-            "Forward_PER":     fwd_per,
-            "Forward_EPS":     fwd_eps,
-            "Earnings_Growth": earn_g,
-            "PBR":             pbr_v,
-            "ROE":             roe_v,
-            "Op_Margin":       op_m,
-            "PEG":             peg_v,
-            "Rev_Growth":      rev_g,
-        })
-        base["Gross_Margin"] = gross_m
-        
-        # FCF 및 관련 지표 계산 (info 누락 시 백업)
-        fcf = info.get('freeCashflow')
-        if fcf is None and not fast_mode:
-            fcf = safe_val(cf, 'Free Cash Flow')
-            
-        mcap = info.get('marketCap') or base.get("MarketCap")
-        
-        shares = info.get('sharesOutstanding')
-        if shares is None and not fast_mode:
-            try:
-                shares = tk.fast_info.shares
-            except Exception:
-                pass
-        
-        base["FCF_Yield"] = (fcf / mcap) if fcf and mcap else None
-        base["FCFPS"] = (fcf / shares) if fcf and shares else None
-        
-        # Rule of 40 (이미 위에서 세팅 완료한 값 재사용)
-        if rev_g is not None and op_m is not None:
-            base["Rule_of_40"] = (rev_g + op_m) * 100
-        else:
-            base["Rule_of_40"] = None
-            
-        ev = info.get('enterpriseValue')
-        if ev is None and mcap and not fast_mode:
-            try:
-                total_debt = safe_val(bs, 'Total Debt') or 0
-                cash = safe_val(bs, 'Cash Cash Equivalents And Short Term Investments') or safe_val(bs, 'Cash And Cash Equivalents') or 0
-                ev = mcap + total_debt - cash
-            except Exception:
-                pass
-                
-        base["EV_EBITDA"] = info.get('enterpriseToEbitda')
-        if base["EV_EBITDA"] is None and ev and not fast_mode:
-            try:
-                ebitda = safe_val(inc, 'EBITDA')
-                if ebitda and ebitda > 0:
-                    base["EV_EBITDA"] = ev / ebitda
-            except Exception:
-                pass
-                
-        if ev and fcf and fcf > 0:
-            base["EV_FCF"] = ev / fcf
-        else:
-            base["EV_FCF"] = None
-
-        base["ROIC"] = None
-        base["Buybacks"] = None
-        for k in ["Earnings_Beat","Next_Earning","Short_Interest","Beta",
-                  "Latest_News","Insider_Buy","Insider_Detail","Edgar_URL", "Risk_Grade"]:
-            base[k] = "N/A"
+        # 기본 값 필드들 초기화
+        for k in ["MarketCap", "PER", "Forward_PER", "Forward_EPS", "Earnings_Growth", 
+                  "PBR", "ROE", "Op_Margin", "PEG", "Rev_Growth", "Gross_Margin", 
+                  "ROIC", "Buybacks", "FCF_Yield", "FCFPS", "Rule_of_40", 
+                  "EV_EBITDA", "EV_FCF", "Earnings_Beat", "Next_Earning", 
+                  "Short_Interest", "Beta", "Risk_Grade", "Latest_News", 
+                  "Insider_Buy", "Insider_Detail", "Edgar_URL"]:
+            base[k] = None if k not in ["Earnings_Beat","Next_Earning","Short_Interest","Beta","Latest_News","Insider_Buy","Insider_Detail","Edgar_URL", "Risk_Grade"] else "N/A"
         base["Insider_Detail"] = ""
-        base["Edgar_URL"]      = ""
+        base["Edgar_URL"] = ""
 
+        # financials 로드 (fast_mode가 아닐 때 12시간 캐시에서 로드)
         if not fast_mode:
-            try:
-                inc = inc_fallback if inc_fallback is not None else tk.financials
-                bs = bs_fallback if bs_fallback is not None else tk.balance_sheet
-                cf = cf_fallback if cf_fallback is not None else tk.cashflow
-
-                if inc is not None and not inc.empty and bs is not None and not bs.empty:
-                    op_inc = 0
-                    if 'Operating Income' in inc.index: op_inc = inc.loc['Operating Income'].iloc[0]
-                    elif 'Operating Income Loss' in inc.index: op_inc = inc.loc['Operating Income Loss'].iloc[0]
-                    
-                    pre_tax = inc.loc['Pretax Income'].iloc[0] if 'Pretax Income' in inc.index else 0
-                    tax_prov = inc.loc['Tax Provision'].iloc[0] if 'Tax Provision' in inc.index else 0
-                    tax_rate = tax_prov / pre_tax if pre_tax and pre_tax > 0 else 0.21
-
-                    tot_assets = bs.loc['Total Assets'].iloc[0] if 'Total Assets' in bs.index else 0
-                    cur_liab = 0
-                    if 'Current Liabilities' in bs.index: cur_liab = bs.loc['Current Liabilities'].iloc[0]
-                    elif 'Total Current Liabilities' in bs.index: cur_liab = bs.loc['Total Current Liabilities'].iloc[0]
-
-                    inv_cap = tot_assets - cur_liab
-                    if inv_cap > 0 and pd.notna(op_inc):
-                        base["ROIC"] = (op_inc * (1 - tax_rate)) / inv_cap
-
-                if cf is not None and not cf.empty:
-                    for row_name in ['Repurchase Of Capital Stock', 'Repurchase Of Stock', 'Stock Repurchased']:
-                        if row_name in cf.index:
-                            val = cf.loc[row_name].iloc[0]
-                            if pd.notna(val):
-                                base["Buybacks"] = val
-                                break
-            except Exception:
-                pass
-
-            if not is_kr:
-                try:
-                    earns = tk.get_earnings_dates(limit=12)
-                    beats, valid = 0, 0
-                    if earns is not None and not earns.empty:
-                        past = earns[earns.index < pd.Timestamp.now(tz='UTC')].head(8)
-                        for _, row in past.iterrows():
-                            rep = row.get('Reported EPS')
-                            est = row.get('Estimate')
-                            if pd.notna(rep) and pd.notna(est):
-                                valid += 1
-                                if rep > est: beats += 1
-                        if valid > 0:
-                            win_rate = (beats / valid) * 100
-                            base["Earnings_Beat"] = f"{valid}전 {beats}승 ({win_rate:.0f}%)"
-                        future = earns[earns.index > pd.Timestamp.now(tz='UTC')].sort_index()
-                        if not future.empty:
-                            base["Next_Earning"] = future.index[0].strftime('%Y-%m-%d')
-                except Exception:
-                    pass
-
-                short_raw = info.get('shortPercentOfFloat')
-                beta_raw = info.get('beta')
-                base["Short_Interest"] = short_interest_label(short_raw)
-
-                if beta_raw:
-                    tag = "🎢 고변동성" if beta_raw >= 1.2 else ("🛡️ 방어적" if beta_raw <= 0.8 else "⚖️ 시장수준")
-                    base["Beta"] = f"{beta_raw:.2f} ({tag})"
-
-                base["Risk_Grade"] = get_comprehensive_risk_grade(short_raw, beta_raw)
-
-                try:
-                    news_data = tk.news
-                    if news_data:
-                        base["Latest_News"] = (
-                            news_data[0].get('content', {}).get('title')
-                            or news_data[0].get('title', 'N/A')
-                        )
-                except Exception:
-                    pass
-
-                status, detail, edgar_url = parse_insider(tk, ticker_str)
-                base["Insider_Buy"]    = status
-                base["Insider_Detail"] = detail
-                base["Edgar_URL"]      = edgar_url
+            price_curr = "KRW" if is_kr else "USD"
+            financials_dict = fetch_stock_financials_cached(ticker_str, is_kr, price_curr)
+            base.update(financials_dict)
+            
+            # Is_Turnaround 계산
+            t_eps = financials_dict.get('PER') # or trailingEps (use PER fallback)
+            f_eps = financials_dict.get('Forward_EPS')
+            is_turnaround = False
+            # If we don't have trailingEps, we can't easily check turnaround, but can check if Forward_EPS is positive
+            base["Is_Turnaround"] = is_turnaround
 
     except Exception as e:
         base["error"] = str(e)
