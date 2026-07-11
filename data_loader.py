@@ -280,31 +280,52 @@ def get_macro_charts():
 @st.cache_data(ttl=600)
 def get_investor_flow():
     """
-    pykrx를 이용하여 최근 거래일의 코스피 투자자별 순매수액(단위: 억 원)을 반환.
+    네이버 금융을 이용하여 최근 거래일 코스피 투자자별 순매수(단위: 억원)를 반환.
     반환값: (외국인, 기관, 개인)
+    pykrx의 잦은 구조변경(에러)을 회피하기 위해 네이버 금융 HTML 파싱을 기본으로 사용.
     """
     try:
-        from pykrx import stock
-        import datetime
-        now = get_kst_now()
-        for days_back in range(5):
-            target_date = (now - datetime.timedelta(days=days_back)).strftime('%Y%m%d')
-            df = stock.get_market_trading_value_by_investor(target_date, target_date, "KOSPI")
-            if not df.empty and '순매수거래대금' in df.columns:
-                # pykrx의 순매수거래대금 단위는 원(KRW)이므로 억 원 단위로 변환
-                foreigner = int(df.loc['외국인', '순매수거래대금'] / 100000000) if '외국인' in df.index else 0
-                institutional = int(df.loc['기관합계', '순매수거래대금'] / 100000000) if '기관합계' in df.index else 0
-                retail = int(df.loc['개인', '순매수거래대금'] / 100000000) if '개인' in df.index else 0
+        import requests
+        from bs4 import BeautifulSoup
+        import re
+
+        url = 'https://finance.naver.com/sise/sise_index.naver?code=KOSPI'
+        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
+        soup = BeautifulSoup(res.content.decode('euc-kr', 'replace'), 'html.parser')
+        dl = soup.find('dl', class_='lst_kos_info')
+        
+        foreigner = 0
+        institutional = 0
+        retail = 0
+        
+        if dl:
+            for dd in dl.find_all('dd'):
+                text = dd.text.strip()
+                sign = 1
+                if '+' in text:
+                    sign = 1
+                elif '-' in text:
+                    sign = -1
                 
-                # 데이터가 모두 0이면 휴일이거나 아직 장 시작 전일 확률이 높음 -> 하루 더 과거로
-                if foreigner == 0 and institutional == 0 and retail == 0:
+                digits = re.sub(r'[^0-9]', '', text)
+                if not digits:
                     continue
+                value = int(digits) * sign
+                
+                if text.startswith('외국인'):
+                    foreigner = value
+                elif text.startswith('기관'):
+                    institutional = value
+                elif text.startswith('개인'):
+                    retail = value
                     
-                return foreigner, institutional, retail
+        if foreigner == 0 and institutional == 0 and retail == 0:
+            return 0, 0, 0
+            
+        return foreigner, institutional, retail
     except Exception as e:
-        print(f"pykrx error: {e}")
-        pass
-    return 0, 0, 0
+        print(f"Error fetching investor flow: {e}")
+        return 0, 0, 0
 
 @st.cache_data(ttl=3600)
 def get_1m_investor_flow():
