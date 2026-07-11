@@ -33,11 +33,15 @@ with tab_news:
                     else:
                         icon = "⚪"
                         
-                    with st.expander(f"{icon} [중요도 {imp}/5] {news.get('title')} ({news.get('source')})"):
+                    # 한국어 번역 제목(title_ko)이 있으면 우선 사용하고, 없으면 원본 title 사용
+                    display_title = news.get('title_ko', news.get('title'))
+                    
+                    with st.expander(f"{icon} [중요도 {imp}/5] {display_title} ({news.get('source')})"):
                         st.markdown(f"**🎯 AI 한줄 평:** {news.get('reason')}")
                         st.markdown(f"**💡 핵심 키워드:** {', '.join(news.get('keywords', []))}")
                         st.markdown(f"**🏢 영향 섹터:** {', '.join(news.get('sectors', []))}")
-                        st.caption(f"수집 시간: {news.get('fetched_at')} | [기사 원문 보기]({news.get('link')})")
+                        st.caption(f"수집 시간: {news.get('fetched_at')}")
+                        st.markdown(f"🔗 **[기사 원문 보기 (영어/원본)]({news.get('link')})**")
         except Exception as e:
             st.error(f"뉴스 데이터를 불러오는데 실패했습니다: {e}")
     else:
