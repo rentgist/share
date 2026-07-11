@@ -23,7 +23,7 @@ def get_gemini_classification(title, summary, source):
     """Gemini API를 활용해 뉴스의 거시경제/증시 파급력을 평가"""
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        return {"sentiment": "N/A", "importance": 0, "sectors": [], "reason": "API Key Missing", "keywords": []}
+        raise ValueError("GEMINI_API_KEY 환경변수가 설정되지 않았습니다. GitHub Secrets 또는 로컬 환경변수를 확인해주세요.")
 
     try:
         from google import genai
