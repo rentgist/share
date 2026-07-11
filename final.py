@@ -49,7 +49,7 @@ except Exception as e:
     st.error(f"🚨 알 수 없는 오류 발생: {e}")
     st.stop()
 
-st.set_page_config(page_title="11원칙 퀀트 대시보드 v23.0", page_icon="🧭", layout="wide")
+st.set_page_config(page_title="11원칙 퀀트 대시보드 v24.0", page_icon="🧭", layout="wide")
 
 # ─────────────────────────────────────────
 # 포맷 및 색상 맵핑
@@ -108,8 +108,8 @@ def color_df(val):
 # ─────────────────────────────────────────
 # UI — 전역 데이터 선초기화
 # ─────────────────────────────────────────
-st.title("🧭 11원칙 퀀트 트레이딩 대시보드 v23.0")
-st.caption("v23.0: 국면 판별 엔진(Regime Engine) 탑재 — 스텔스 약세장(Grinding Bear)·고변동 횡보(Whipsaw) 감지 + 바닥 다지기(Basing) 구조 점수 + 백테스트·실시간 점수 스케일 통일")
+st.title("🧭 11원칙 퀀트 트레이딩 대시보드 v24.0")
+st.caption("v24.0: 매크로 게이트키퍼 Tier 시스템 탑재 — 극단 패닉 선발대(Tier 3) / 추세전환 불타기(Tier 2) / 코어 적립(Tier 1) 실시간 판정")
 
 cnn_score, cnn_rating, cnn_history = get_real_cnn_fg()
 sector_base = get_sector_baseline()
@@ -500,6 +500,94 @@ with tab2:
         st.caption(f"판단 근거: 위험 {kr_danger}점 · 바닥 {kr_score}% · 반등 신뢰도 {kr_rec_score} · {kr_phase}")
         for act in kr_adv_actions:
             st.markdown(f"- {act}")
+
+    st.divider()
+
+    # ── 🚦 v24.0 핵심: 실시간 Tier 판정 배너 ──────────────────────
+    st.markdown("##### 🚦 v24.0 실시간 Tier 판정 — \"지금 어떤 무기를 꺼내야 하는가?\"")
+    st.caption(
+        "바닥 점수 × 반등 신뢰도 × 위험도를 교차해 현재 시장이 Tier 1·2·3 중 어디에 해당하는지 실시간 판정합니다. "
+        "자세한 기준은 📖 [11원칙 매매 가이드라인] 탭을 참고하세요."
+    )
+
+    def _compute_tier(score, rec_score, danger, phase):
+        """v24.0 Tier 판정 로직 — 바닥 점수·반등 신뢰도·위험 경보 교차 판단"""
+        # Tier 3: 극단적 패닉 (진바닥 90% 수준, 기술적 지표 의미 없는 구간)
+        if score >= 80:
+            return "🔥 Tier 3", "극단적 패닉장", (
+                "#e94560",
+                "조건 충족: 바닥 탐지 점수가 80점 이상입니다. "
+                "이 순간은 기술적 지표가 무너져 있어도 우량주에 스나이퍼 예산의 10%를 1차 선발대로 투입할 수 있는 구간입니다. "
+                "단, 오전 갭상승 속임수를 피해 반드시 오후 3시에 집행하세요."
+            )
+        # Tier 2: 추세전환기 (불타기 구간 — 게이트키퍼 확인)
+        elif score >= 50:
+            gates_ok = (rec_score >= 2)  # 반등 신뢰도 2점 이상 = 신호 충분
+            if gates_ok:
+                return "🟡 Tier 2", "추세 전환 / 불타기 구간", (
+                    "#fcca46",
+                    f"조건 충족: 바닥 점수 {score}점 + 반등 신뢰도 {rec_score}점. "
+                    "게이트키퍼(5일선 돌파·환율 안정·기관 수급)를 2~3개 이상 확인한 뒤, "
+                    "오후 3시에 남은 예산의 10%를 불타기(Pyramiding)하는 구간입니다."
+                )
+            else:
+                return "🟡 Tier 2 대기", "바닥 확인 중 — 게이트키퍼 미충족", (
+                    "#fcca46",
+                    f"바닥 점수 {score}점이나 반등 신뢰도 {rec_score}점 (기준: 2점 이상 필요). "
+                    "수급(기관/외국인 매수)·5일선 돌파·환율 안정 중 2가지 이상이 충족되면 불타기 개시. 현금 대기."
+                )
+        # Tier 1: 일상 상승/횡보장 (코어 자산 GTC 적립)
+        else:
+            if danger <= 1:
+                return "🟢 Tier 1", "일상 적립 구간", (
+                    "#21c354",
+                    "시장에 큰 패닉 없는 안정 구간입니다. "
+                    "미국 빅테크 우량주(MSFT, GOOGL 등)가 RSI 40 이하 또는 볼린저 밴드 하단 터치 시 "
+                    "GTC 예약 주문으로 코어 자산을 기계적으로 적립하세요."
+            )
+            else:
+                return "🟠 주의 대기", "위험 경보 발동 — 현금 보유", (
+                    "#ff7c21",
+                    f"위험 경보 {danger}점 발동. 바닥이 아직 형성되지 않았습니다. "
+                    "현금 비중을 높게 유지하고 바닥 점수가 50점 이상으로 치솟는 시점을 기다리세요."
+                )
+
+    tier_col1, tier_col2 = st.columns(2)
+    with tier_col1:
+        us_tier_label, us_tier_sub, (us_tier_color, us_tier_msg) = _compute_tier(
+            us_score, us_rec_score, us_danger, us_phase
+        )
+        st.markdown(
+            f"<div style='background:{us_tier_color}22; border-left:6px solid {us_tier_color}; "
+            f"padding:15px; border-radius:8px; margin-bottom:10px;'>"
+            f"<div style='font-size:1.4em; font-weight:900;'>🇺🇸 {us_tier_label}</div>"
+            f"<div style='font-size:0.95em; font-weight:600; color:{us_tier_color}; margin:4px 0;'>{us_tier_sub}</div>"
+            f"<div style='font-size:0.85em; color:#ddd;'>{us_tier_msg}</div>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+    with tier_col2:
+        kr_tier_label, kr_tier_sub, (kr_tier_color, kr_tier_msg) = _compute_tier(
+            kr_score, kr_rec_score, kr_danger, kr_phase
+        )
+        st.markdown(
+            f"<div style='background:{kr_tier_color}22; border-left:6px solid {kr_tier_color}; "
+            f"padding:15px; border-radius:8px; margin-bottom:10px;'>"
+            f"<div style='font-size:1.4em; font-weight:900;'>🇰🇷 {kr_tier_label}</div>"
+            f"<div style='font-size:0.95em; font-weight:600; color:{kr_tier_color}; margin:4px 0;'>{kr_tier_sub}</div>"
+            f"<div style='font-size:0.85em; color:#ddd;'>{kr_tier_msg}</div>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+
+    # False Signal 경보 — 매수 금지 조건 실시간 체크
+    false_signals = []
+    if us_rec_score == 0 and us_score < 70:
+        false_signals.append("🚫 **반등 신뢰도 0** — 오늘의 급등은 쇼트커버링 가능성. 수급 없는 가짜 반등 경계")
+    if us_score < 50 and us_danger >= 3:
+        false_signals.append("🚫 **위험 경보 + 바닥 점수 미달** — 낙폭 과대라는 착시 주의. 오늘 매수 보류 권장")
+    if false_signals:
+        st.warning("\n".join(["**⛔ False Signal 차단기 발동 (매수 보류 권장)**"] + false_signals))
 
     st.divider()
 
@@ -1225,13 +1313,78 @@ with tab_port:
                 st.code("\n".join(port_lines), language="text")
 
 with tab5:
-    st.header("📖 11원칙 퀀트 매매 가이드라인 (오리지널 철학)")
+    st.header("📖 11원칙 퀀트 매매 마스터 매뉴얼 v24.0")
+    st.caption("v24.0: 매크로 게이트키퍼 Tier 시스템 — '칼자루는 진바닥으로 잡고, 방아쇠는 수급으로 당긴다'")
+
     st.markdown("""
-이 대시보드는 사용자님의 정통 가치투자 철학(위기 줍줍, 턴어라운드)과 기계적인 퀀트 필터링을 결합한 하이브리드 시스템입니다.
+## 🏛️ I. 투자 철학
+
+> **"가장 쌀 때(진바닥 90%) 10%의 용기를 내고, 어설프게 반등할 때(반등 신뢰도 0) 90%의 현금을 인내한다."**
+
+우리의 시스템은 시장의 공포 단계에 따라 진입의 '잣대'를 유연하게 바꿉니다. 10년에 한 번 오는 완벽한 타점만 기다리지 않으며, 동시에 매일 찾아오는 가짜 반등의 유혹에도 속지 않습니다.
+
+---
+
+## 📊 II. 실전 진입 3단계 (Tier System)
+
+### 🔥 Tier 3 — 극단적 패닉장 (1차 선발대 투입)
+
+| 항목 | 기준 |
+|------|------|
+| **발동 조건** | 진바닥 탐지 점수 ≥ 80점 (극단 패닉) |
+| **특징** | 5일선·수급·매크로 지표가 전부 박살. 기다리면 도매가를 놓침 |
+| **액션** | 오직 재무 퀄리티(FCF Yield ✅, PEG ≤ 1.5)가 검증된 1등 우량주에 **스나이퍼 예산의 10%** 1차 선투입 |
+| **집행 시각** | 오후 3시 (장 막판 종가 부근) — 오전 갭상승 속임수 회피 |
+
+> 예: 삼성전자·MSFT 등 FCF·PEG 1등 우량주. 기술적 지표가 다 망가져 있어도 투입 가능.
+
+---
+
+### 🟡 Tier 2 — 추세 전환기·중급 하락장 (2/3차 불타기)
+
+**발동 조건:** Tier 3 1차 투입 후, 시장이 바닥을 다지고 이륙 준비를 할 때.
+
+**게이트키퍼 4원칙 (최소 2~3개 충족 필요)**
+
+| # | 조건 | 확인 방법 |
+|---|------|-----------|
+| 1 | **반등 신뢰도** | 본 대시보드 반등 신뢰도 스코어 ≥ 2점 |
+| 2 | **추세 (5일선)** | 일봉상 주가가 5일 이동평균선 위로 안착 |
+| 3 | **매크로** | 원/달러 환율 상승 멈춤(횡보 또는 하락) + 야간 선물 안정 |
+| 4 | **수급** | 기관·외국인 순매수 유입 + 평균 대비 거래량 증가 |
+
+**액션:** 위 4가지 중 2~3가지 동시 충족 확인 시 → **오후 3시**에 남은 예산의 **10% 불타기(Pyramiding)**
+(조건 미충족 = 현금 무한 대기)
+
+---
+
+### 🟢 Tier 1 — 일상 상승·횡보장 (코어 자산 GTC 적립)
+
+| 항목 | 기준 |
+|------|------|
+| **발동 조건** | 시장에 큰 패닉 없는 평온 상태 (진바닥 점수 < 50) |
+| **특징** | 진바닥 확률은 낮지만, 코어 자산 적립 기회 |
+| **액션** | MSFT·GOOGL 등 미국 빅테크가 **RSI ≤ 40** 또는 **볼린저 밴드 하단** 터치 시 GTC 예약 주문으로 기계 분할매수 |
+
+---
+
+## 🚫 III. 절대 매수 금지 — False Signal 차단기
+
+> 피 같은 현금을 갉아먹는 '가짜 반등(Bull Trap)'을 차단하는 3개의 필터. 하나라도 해당하면 그날 **무조건 매수 보류 + HTS 종료.**
+
+| 차단 조건 | 설명 |
+|-----------|------|
+| ⛔ **오전의 속임수** | 9~11시 갭상승 후 오후에 장중 고점을 깨고 흘러내릴 때. 매수는 항상 오후 3시에만 결정. |
+| ⛔ **가짜 거품주** | 반토막이 나도 PEG ≥ 1.5 이거나 FCF Yield 마이너스인 종목. 낙폭과대 착시 경계. |
+| ⛔ **엔진 꺼짐** | 지수가 3~4% 급등해도 반등 신뢰도 = 0이면 투입 금지. 쇼트커버링일 뿐 진짜 자금이 아님. |
+
+---
+
+## 📋 IV. 오리지널 11원칙 (변경 없음)
 
 **[ 펀더멘탈: 실적과 턴어라운드 ]**
-- **1원칙 (3개년 우상향):** 매출 and 영업이익 지속 상승.
-- **2원칙 (시가총액 비교):** 시장/섹터 대비 시총 규모가 적정하게 낮을 것.
+- **1원칙 (3개년 우상향):** 매출 & 영업이익 지속 상승.
+- **2원칙 (시가총액 비교):** 시장·섹터 대비 시총 규모가 적정하게 낮을 것.
 - **3원칙 (턴어라운드 기대):** 현재 마진이 낮아도 미래 개선이 뚜렷하면 투자 가능.
 - **4원칙 (비즈니스 모델):** 단독 매출인지, 연결/종속 업체인지 파악하고 시장 점유율 이해.
 
@@ -1241,11 +1394,19 @@ with tab5:
 - **7원칙 (하락장 리밸런싱):** 시장 전체가 하락할 때 기존 비중 조절 및 신규 종목 편입.
 
 **[ 대가의 매매 집행 원칙 ]**
-- **8원칙 (오후 2시 반 타점):** 장중 변동성 노이즈를 피하기 위해 매수 결정은 오후 2시 30분 이후 종가 부근에서 내린다.
+- **8원칙 (오후 3시 타점):** 장중 변동성 노이즈를 피하기 위해 매수 결정은 오후 3시에 내린다. (v24.0에서 '오후 2시 반' → '오후 3시'로 정밀화)
 - **9원칙 (장중 가짜 반등 경계):** 폭락장 중 일시적 반등은 속임수일 확률이 높으므로 종가 지지를 반드시 확인하고 분할 매수한다.
 - **10원칙 (포트폴리오 배분):** 개별 우량주 집중 리스크를 줄이기 위해 예산의 50%는 지수 ETF, 50%는 개별 우량주로 배분한다.
 - **11원칙 (바닥 퀀트 원칙 준수):** 감정을 배제하고 시스템이 제시하는 진바닥 스코어와 반등 신뢰도를 기계적으로 신뢰한다.
-    """)
+
+---
+
+## 🛡️ V. CFO 결론 코멘트
+
+> 이 v24.0 매뉴얼은 인간의 조급함과 탐욕, 공포를 수학적으로 완벽하게 통제하기 위해 만들어진 가장 차가운 갑옷입니다.
+> 완벽하게 세팅된 이 시스템에 자본을 맡기고, 일상의 평온함과 꿀잠을 마음껏 누리세요.
+""")
+
 
 with tab_risk:
     st.header("🚨 공매도 & 변동성(Beta) 종합 리스크 가이드")
