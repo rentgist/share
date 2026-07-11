@@ -15,14 +15,6 @@ from data_loader import (
     get_investor_flow,
     get_1m_investor_flow
 )
-import sys
-if "signals" in sys.modules:
-    import importlib
-    importlib.reload(sys.modules["signals"])
-if "data_loader" in sys.modules:
-    import importlib
-    importlib.reload(sys.modules["data_loader"])
-
 try:
     from signals import (
         calculate_us_risk_radar,
@@ -48,6 +40,7 @@ except ImportError as e:
 except Exception as e:
     st.error(f"🚨 알 수 없는 오류 발생: {e}")
     st.stop()
+
 
 st.set_page_config(page_title="11원칙 퀀트 대시보드 v24.0", page_icon="🧭", layout="wide")
 
@@ -505,91 +498,99 @@ with tab2:
 
     # ── 🚦 v24.0 핵심: 실시간 Tier 판정 배너 ──────────────────────
     st.markdown("##### 🚦 v24.0 실시간 Tier 판정 — \"지금 어떤 무기를 꺼내야 하는가?\"")
-    st.caption(
-        "바닥 점수 × 반등 신뢰도 × 위험도를 교차해 현재 시장이 Tier 1·2·3 중 어디에 해당하는지 실시간 판정합니다. "
-        "자세한 기준은 📖 [11원칙 매매 가이드라인] 탭을 참고하세요."
-    )
 
-    def _compute_tier(score, rec_score, danger, phase):
-        """v24.0 Tier 판정 로직 — 바닥 점수·반등 신뢰도·위험 경보 교차 판단"""
-        # Tier 3: 극단적 패닉 (진바닥 90% 수준, 기술적 지표 의미 없는 구간)
+    def _compute_tier(score, rec_score, danger):
+        """
+        v24.0 Tier 판정 로직.
+        반환: (tier_label, action_badge, action_color, border_color, body_lines)
+        - body_lines: 흰색 텍스트로 표시할 조건 항목 리스트
+        """
         if score >= 80:
-            return "🔥 Tier 3", "극단적 패닉장", (
-                "#e94560",
-                "조건 충족: 바닥 탐지 점수가 80점 이상입니다. "
-                "이 순간은 기술적 지표가 무너져 있어도 우량주에 스나이퍼 예산의 10%를 1차 선발대로 투입할 수 있는 구간입니다. "
-                "단, 오전 갭상승 속임수를 피해 반드시 오후 3시에 집행하세요."
-            )
-        # Tier 2: 추세전환기 (불타기 구간 — 게이트키퍼 확인)
+            # Tier 3: 극단 패닉 — 반등 신뢰도 체크 완전 무효화 (설계 의도)
+            body = [
+                f"📊 바닥 점수: <b>{score}점</b> (기준 ≥ 80점) ✅",
+                "⚡ <b>반등 신뢰도 체크: 이 Tier에서 면제</b> — 기술적 지표가 무너진 구간이므로 반등 신호를 기다리면 도매가를 놓침",
+                "🎯 FCF Yield ✅ &amp; PEG ≤ 1.5인 1등 우량주 확인 후 <b>오후 3시에 예산의 10% 선투입</b>",
+                "⏰ 오전 갭상승 속임수 주의 — 집행은 반드시 오후 3시",
+            ]
+            return ("🔥 Tier 3", "극단 패닉", "✅ 선투입 가능", "#00d4aa", "#e94560", body)
+
         elif score >= 50:
-            gates_ok = (rec_score >= 2)  # 반등 신뢰도 2점 이상 = 신호 충분
+            gates_ok = rec_score >= 2
+            body = [
+                f"📊 바닥 점수: <b>{score}점</b> (기준 ≥ 50점) ✅",
+                f"📡 반등 신뢰도: <b>{rec_score}점</b> {'✅ 충족 (기준 ≥ 2점)' if gates_ok else '❌ 미충족 (기준 ≥ 2점 필요)'}",
+            ]
             if gates_ok:
-                return "🟡 Tier 2", "추세 전환 / 불타기 구간", (
-                    "#fcca46",
-                    f"조건 충족: 바닥 점수 {score}점 + 반등 신뢰도 {rec_score}점. "
-                    "게이트키퍼(5일선 돌파·환율 안정·기관 수급)를 2~3개 이상 확인한 뒤, "
-                    "오후 3시에 남은 예산의 10%를 불타기(Pyramiding)하는 구간입니다."
-                )
+                body += [
+                    "🎯 게이트키퍼 2~3개 이상 추가 확인 (5일선 돌파 / 환율 안정 / 기관 수급)",
+                    "<b>오후 3시에 남은 예산의 10% 불타기(Pyramiding)</b>",
+                ]
+                return ("🟡 Tier 2", "추세 전환", "✅ 불타기 가능", "#00d4aa", "#fcca46", body)
             else:
-                return "🟡 Tier 2 대기", "바닥 확인 중 — 게이트키퍼 미충족", (
-                    "#fcca46",
-                    f"바닥 점수 {score}점이나 반등 신뢰도 {rec_score}점 (기준: 2점 이상 필요). "
-                    "수급(기관/외국인 매수)·5일선 돌파·환율 안정 중 2가지 이상이 충족되면 불타기 개시. 현금 대기."
-                )
-        # Tier 1: 일상 상승/횡보장 (코어 자산 GTC 적립)
+                body += [
+                    "⏸ 게이트키퍼 미충족 — 수급·5일선·환율 중 2개 이상 충족 시 진입 허가",
+                    "<b>현재: 현금 무한 대기. 조건 충족 날 오후 3시 진입.</b>",
+                ]
+                return ("🟡 Tier 2 대기", "회복 확인 중", "⏸ 현금 대기", "#fcca46", "#fcca46", body)
+
         else:
             if danger <= 1:
-                return "🟢 Tier 1", "일상 적립 구간", (
-                    "#21c354",
-                    "시장에 큰 패닉 없는 안정 구간입니다. "
-                    "미국 빅테크 우량주(MSFT, GOOGL 등)가 RSI 40 이하 또는 볼린저 밴드 하단 터치 시 "
-                    "GTC 예약 주문으로 코어 자산을 기계적으로 적립하세요."
-            )
+                body = [
+                    f"📊 바닥 점수: <b>{score}점</b> — 패닉 없는 안정 구간",
+                    "🎯 MSFT·GOOGL 등 빅테크가 <b>RSI ≤ 40</b> 또는 <b>볼린저 밴드 하단</b> 터치 시",
+                    "<b>GTC 예약 주문으로 코어 자산 기계 분할매수</b>",
+                ]
+                return ("🟢 Tier 1", "일상 적립", "✅ GTC 적립 가능", "#00d4aa", "#21c354", body)
             else:
-                return "🟠 주의 대기", "위험 경보 발동 — 현금 보유", (
-                    "#ff7c21",
-                    f"위험 경보 {danger}점 발동. 바닥이 아직 형성되지 않았습니다. "
-                    "현금 비중을 높게 유지하고 바닥 점수가 50점 이상으로 치솟는 시점을 기다리세요."
-                )
+                body = [
+                    f"📊 바닥 점수: <b>{score}점</b> — 아직 바닥 미형성",
+                    f"⚠️ 위험 경보 <b>{danger}점</b> 발동",
+                    "<b>현금 비중 최대 유지. 바닥 점수 50점 돌파 시까지 전면 대기.</b>",
+                ]
+                return ("🟠 위험 대기", "경보 발동", "⛔ 전면 대기", "#e94560", "#ff7c21", body)
+
+    def _render_tier_card(flag, score, rec_score, danger):
+        label, sub, action_badge, action_color, border_color, body = _compute_tier(score, rec_score, danger)
+        body_html = "".join(f"<div style='margin:4px 0; font-size:0.88em; color:#fff;'>· {line}</div>" for line in body)
+        st.markdown(
+            f"<div style='background:{border_color}18; border-left:5px solid {border_color}; "
+            f"padding:14px 16px; border-radius:8px; margin-bottom:6px;'>"
+            f"<div style='font-size:1.3em; font-weight:900; color:#fff;'>{flag} {label}</div>"
+            f"<div style='font-size:0.9em; font-weight:700; color:{border_color}; margin:3px 0 8px;'>{sub}</div>"
+            f"<div style='display:inline-block; padding:3px 10px; border-radius:12px; "
+            f"background:{action_color}30; border:1px solid {action_color}; "
+            f"color:{action_color}; font-weight:700; font-size:0.88em; margin-bottom:8px;'>{action_badge}</div>"
+            f"{body_html}"
+            f"</div>",
+            unsafe_allow_html=True
+        )
 
     tier_col1, tier_col2 = st.columns(2)
     with tier_col1:
-        us_tier_label, us_tier_sub, (us_tier_color, us_tier_msg) = _compute_tier(
-            us_score, us_rec_score, us_danger, us_phase
-        )
-        st.markdown(
-            f"<div style='background:{us_tier_color}22; border-left:6px solid {us_tier_color}; "
-            f"padding:15px; border-radius:8px; margin-bottom:10px;'>"
-            f"<div style='font-size:1.4em; font-weight:900;'>🇺🇸 {us_tier_label}</div>"
-            f"<div style='font-size:0.95em; font-weight:600; color:{us_tier_color}; margin:4px 0;'>{us_tier_sub}</div>"
-            f"<div style='font-size:0.85em; color:#ddd;'>{us_tier_msg}</div>"
-            f"</div>",
-            unsafe_allow_html=True
-        )
+        _render_tier_card("🇺🇸", us_score, us_rec_score, us_danger)
     with tier_col2:
-        kr_tier_label, kr_tier_sub, (kr_tier_color, kr_tier_msg) = _compute_tier(
-            kr_score, kr_rec_score, kr_danger, kr_phase
-        )
-        st.markdown(
-            f"<div style='background:{kr_tier_color}22; border-left:6px solid {kr_tier_color}; "
-            f"padding:15px; border-radius:8px; margin-bottom:10px;'>"
-            f"<div style='font-size:1.4em; font-weight:900;'>🇰🇷 {kr_tier_label}</div>"
-            f"<div style='font-size:0.95em; font-weight:600; color:{kr_tier_color}; margin:4px 0;'>{kr_tier_sub}</div>"
-            f"<div style='font-size:0.85em; color:#ddd;'>{kr_tier_msg}</div>"
-            f"</div>",
-            unsafe_allow_html=True
-        )
+        _render_tier_card("🇰🇷", kr_score, kr_rec_score, kr_danger)
 
-    # False Signal 경보 — 매수 금지 조건 실시간 체크
-    false_signals = []
-    if us_rec_score == 0 and us_score < 70:
-        false_signals.append("🚫 **반등 신뢰도 0** — 오늘의 급등은 쇼트커버링 가능성. 수급 없는 가짜 반등 경계")
-    if us_score < 50 and us_danger >= 3:
-        false_signals.append("🚫 **위험 경보 + 바닥 점수 미달** — 낙폭 과대라는 착시 주의. 오늘 매수 보류 권장")
-    if false_signals:
-        st.warning("\n".join(["**⛔ False Signal 차단기 발동 (매수 보류 권장)**"] + false_signals))
+    # ── False Signal 차단기: 각 시장별로 독립 판정, Tier 3 시장은 제외 ──
+    us_is_tier3 = us_score >= 80
+    kr_is_tier3 = kr_score >= 80
+    alerts = []
+    if not us_is_tier3:
+        if us_rec_score == 0 and us_score >= 50:
+            alerts.append("🇺🇸 **[미국] 반등 신뢰도 0** — Tier 2 조건 미충족. 오늘 미국 추가 매수 보류.")
+        if us_score < 50 and us_danger >= 3:
+            alerts.append("🇺🇸 **[미국] 위험 경보 + 바닥 미달** — 낙폭 과대 착시 경계. 미국 매수 전면 금지.")
+    if not kr_is_tier3:
+        if kr_rec_score == 0 and kr_score >= 50:
+            alerts.append("🇰🇷 **[한국] 반등 신뢰도 0** — Tier 2 조건 미충족. 오늘 한국 추가 매수 보류.")
+        if kr_score < 50 and kr_danger >= 3:
+            alerts.append("🇰🇷 **[한국] 위험 경보 + 바닥 미달** — 낙폭 과대 착시 경계. 한국 매수 전면 금지.")
+    if alerts:
+        st.warning("**⛔ False Signal 차단기** (해당 시장 Tier 3 제외, 각 시장별 독립 판정)\n\n" + "\n\n".join(alerts))
 
     st.divider()
+
 
     # ── 백테스트 (10년 데이터 기반 완화 컷) ──
     with st.expander("🔬 과거 10년 백테스트 (바닥 탐지기 기준)"):
