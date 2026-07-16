@@ -9,7 +9,7 @@ import concurrent.futures
 import requests_cache
 
 # yfinance용 캐시 세션 (1시간 유지) - 429 Rate Limit 방지 및 속도 최적화
-yf_session = requests_cache.CachedSession('yfinance.cache', expire_after=3600)
+yf_session = requests_cache.CachedSession('yfinance_v2.cache', expire_after=3600)
 
 import FinanceDataReader as fdr
 import streamlit as st
@@ -23,10 +23,13 @@ from signals import parse_insider, short_interest_label, get_comprehensive_risk_
 # KRX 맵핑
 # ─────────────────────────────────────────
 @st.cache_data(ttl=86400)
-def get_krx_mapping():
+def get_krx_mapping_v2():
     mapping = {
         "LS ELECTRIC": {"raw_code": "010120", "yf_code": "010120.KS"},
+        "LSELECTRIC": {"raw_code": "010120", "yf_code": "010120.KS"},
         "LS일렉트릭": {"raw_code": "010120", "yf_code": "010120.KS"},
+        "SK하이닉스": {"raw_code": "000660", "yf_code": "000660.KS"},
+        "SK Hynix": {"raw_code": "000660", "yf_code": "000660.KS"},
         "현대차": {"raw_code": "005380", "yf_code": "005380.KS"},
         "현대자동차": {"raw_code": "005380", "yf_code": "005380.KS"},
         "삼성전자": {"raw_code": "005930", "yf_code": "005930.KS"},
@@ -38,18 +41,23 @@ def get_krx_mapping():
         df = fdr.StockListing('KRX')
         for _, row in df.iterrows():
             market_suffix = ".KS" if row['Market'] == 'KOSPI' else ".KQ"
-            mapping[str(row['Name']).upper()] = {
+            # 원래 이름과 공백 제거 이름을 모두 등록하여 검색 성공률 향상
+            raw_name = str(row['Name']).upper()
+            spaceless_name = raw_name.replace(" ", "")
+            info_dict = {
                 "raw_code": row['Code'],
                 "yf_code": row['Code'] + market_suffix
             }
+            mapping[raw_name] = info_dict
+            mapping[spaceless_name] = info_dict
         return mapping
     except Exception:
         mapping["_ERROR_"] = True
         return mapping
 
-KRX_DICT = get_krx_mapping()
+KRX_DICT = get_krx_mapping_v2()
 if KRX_DICT.get("_ERROR_"):
-    get_krx_mapping.clear()
+    get_krx_mapping_v2.clear()
 
 # ─────────────────────────────────────────
 # 일정 관리
@@ -197,7 +205,10 @@ def get_macro_charts():
         "rsp_10y": "RSP",
         "vkospi_10y": "^VKOSPI",
         "tnx_10y": "^TNX",
-        "wti_10y": "CL=F"
+        "wti_10y": "CL=F",
+        "irx_10y": "^IRX",     # 🆕 미국 단기금리(3개월물) — 장단기 스프레드 계산용
+        "mu_2y": "MU",         # 🆕 마이크론(DRAM 업황 프록시) — 반도체 선행 지표
+        "soxx_2y": "SOXX",     # 🆕 반도체 ETF (SOX 지수) — MU 상대 강도 비교 기준
     }
     def fetch_macro(k, v):
         try:
@@ -375,10 +386,17 @@ def get_stock_data(query, is_kr=False, fast_mode=False):
         start   = (kst_now - datetime.timedelta(days=365)).strftime('%Y-%m-%d')
 
         if is_kr:
-            kr_info = KRX_DICT.get(str(query).strip().upper())
+            query_spaceless = str(query).replace(" ", "").upper()
+            kr_info = KRX_DICT.get(query_spaceless)
             if kr_info: raw_code, yf_code = kr_info["raw_code"], kr_info["yf_code"]
             else:        raw_code, yf_code = query, f"{query}.KS"
-            hist = fetch_fdr_history(raw_code, start=start).dropna()
+            try:
+                hist = fetch_fdr_history(raw_code, start=start).dropna()
+            except Exception as e:
+                hist = pd.DataFrame()
+            if hist.empty or len(hist) < 30:
+                print(f"FDR empty for {raw_code}, falling back to yfinance...")
+                hist = fetch_ticker_history(yf_code, period="1y").dropna()
             tk   = yf.Ticker(yf_code)
             ticker_str = raw_code
         else:
@@ -662,5 +680,6 @@ def get_stock_data(query, is_kr=False, fast_mode=False):
                 base["Edgar_URL"]      = edgar_url
 
     except Exception as e:
-        base["error"] = str(e)
+        base["error"] = f"{type(e).__name__}: {str(e)}"
+        return base
     return base

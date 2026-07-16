@@ -127,7 +127,7 @@ def analyze_market_structure(close):
 # ═════════════════════════════════════════
 # 🇺🇸 레이어 1: 미국 전용 위험 탐지기 (v23.0: 스텔스 약세장 레이어 추가)
 # ═════════════════════════════════════════
-def calculate_us_risk_radar(vix_hist, vix3m_hist, hyg_hist, ief_hist, spy_hist):
+def calculate_us_risk_radar(vix_hist, vix3m_hist, hyg_hist, ief_hist, spy_hist, tnx_hist=None, irx_hist=None, mu_hist=None, soxx_hist=None):
     alerts = []
     danger_count = 0
 
@@ -227,6 +227,44 @@ def calculate_us_risk_radar(vix_hist, vix3m_hist, hyg_hist, ief_hist, spy_hist):
                                  f"20일 순변화는 미미. 추세 매매 실패 확률 높음 → 현금 비중 유지 유리."))
             danger_count += 1
 
+    # ── ⑥ 🆕 장단기 금리 역전 (수익률 곡선 역전 = 경기침체 선행 신호) ──
+    if tnx_hist is not None and irx_hist is not None and not tnx_hist.empty and not irx_hist.empty:
+        try:
+            tnx_val = float(tnx_hist['Close'].dropna().iloc[-1])  # 10년물 (%)
+            irx_val = float(irx_hist['Close'].dropna().iloc[-1]) / 10.0  # ^IRX는 할인율 단위 → % 환산
+            spread = tnx_val - irx_val  # 장단기 스프레드 (양수=정상, 음수=역전)
+
+            if spread <= -0.5:
+                alerts.append(("🚨", f"장단기 금리 완전 역전 (10Y-3M: {spread:+.2f}%p) — 경기침체 강력 선행 신호. 성장주 밸류에이션 직격."))
+                danger_count += 2
+            elif spread <= 0:
+                alerts.append(("🔴", f"장단기 금리 역전 발생 (10Y-3M: {spread:+.2f}%p) — 경기침체 경보 발령. 성장주 할인율 상승 위험."))
+                danger_count += 1
+            elif spread <= 0.5:
+                alerts.append(("🟡", f"장단기 금리차 축소 (10Y-3M: {spread:+.2f}%p) — 역전 경계선 접근 중. 주시 필요."))
+            else:
+                alerts.append(("🟢", f"장단기 금리차 정상 (10Y-3M: {spread:+.2f}%p) — 수익률 곡선 건강."))
+        except Exception:
+            alerts.append(("⚪", "장단기 금리차 산출 불가."))
+    
+    # ── ⑦ 🆕 반도체 업황 건강도 (MU vs SOXX 상대 강도 = DRAM 업황 프록시) ──
+    if mu_hist is not None and soxx_hist is not None and not mu_hist.empty and not soxx_hist.empty:
+        try:
+            # 최근 20거래일 수익률 비교
+            mu_20d   = (float(mu_hist['Close'].dropna().iloc[-1]) / float(mu_hist['Close'].dropna().iloc[-21]) - 1) * 100
+            soxx_20d = (float(soxx_hist['Close'].dropna().iloc[-1]) / float(soxx_hist['Close'].dropna().iloc[-21]) - 1) * 100
+            rel_strength = mu_20d - soxx_20d  # 양수 = MU 강세 = DRAM 업황 호조
+
+            if rel_strength >= 5:
+                alerts.append(("🟢", f"반도체 업황 강세 — MU(마이크론) 20일 수익률이 SOX 대비 {rel_strength:+.1f}%p 초과 (DRAM 수요 회복 시그널)."))
+            elif rel_strength <= -5:
+                alerts.append(("🔴", f"반도체 업황 약세 — MU 20일 수익률이 SOX 대비 {rel_strength:+.1f}%p 부진 (DRAM 공급 과잉 경고). 반도체 비중 축소 검토."))
+                danger_count += 1
+            else:
+                alerts.append(("🟡", f"반도체 업황 중립 — MU vs SOX 상대 강도 {rel_strength:+.1f}%p (방향성 탐색 중)."))
+        except Exception:
+            alerts.append(("⚪", "반도체 업황 지표 산출 불가."))
+
     # 감지 항목이 늘어난 만큼 등급 컷도 상향 (과잉 경보 방지)
     if danger_count >= 7:
         grade = "🚨 글로벌 마스터 킬 스위치 작동 — 시스템적 유동성 위기."
@@ -311,6 +349,8 @@ def calculate_kr_risk_radar(vkospi_hist, usdkrw_hist, kospi_hist):
         elif struct["is_whipsaw"]:
             alerts.append(("🟡", f"KOSPI 고변동 횡보 — 변동성 {struct['realized_vol']:.0f}% 대비 방향성 부재. 관망 유리."))
             danger_count += 1
+        else:
+            alerts.append(("🟢", f"KOSPI 시장 구조 건전 — 스텔스 약세 및 고변동 징후 없음."))
 
     if danger_count >= 5:
         grade = "🔴 한국 위기 경보 — 외인 이탈 및 폭락 초입 우려."
@@ -582,9 +622,9 @@ def calculate_recovery_confirmation(rsp_hist, spy_hist, hyg_hist, ief_hist):
     return verdict, signals, recovery_score
 
 
-def calculate_kr_recovery_confirmation(kospi_hist, usdkrw_hist):
-    signals = []
-    recovery_score = 0
+def calculate_macro_risk_gauge(kospi_hist, usdkrw_hist):
+    details = []
+    macro_score = 0
 
     if not kospi_hist.empty and len(kospi_hist) >= 50:
         try:
@@ -594,15 +634,15 @@ def calculate_kr_recovery_confirmation(kospi_hist, usdkrw_hist):
             ma50 = float(close.rolling(50).mean().iloc[-1])
             
             if curr_k > ma20 and curr_k > ma50:
-                signals.append(("🟢", "한국장 추세 완전 회복 — KOSPI가 20일선 및 50일선을 동시 상회 중입니다."))
-                recovery_score += 50
+                details.append(("🟢", "KOSPI 추세 강함 — 20일선 및 50일선 상회 (+50점)"))
+                macro_score += 50
             elif curr_k > ma20:
-                signals.append(("🟡", "한국장 단기 회복 — KOSPI가 20일선을 회복했으나 아직 50일선 아래에 있습니다."))
-                recovery_score += 25
+                details.append(("🟡", "KOSPI 단기 회복 — 20일선 상회, 50일선 하회 (+25점)"))
+                macro_score += 25
             else:
-                signals.append(("🔴", "한국장 추세 미회복 — KOSPI가 주요 이동평균선(20일, 50일)을 하회하고 있습니다."))
+                details.append(("🔴", "KOSPI 추세 약함 — 20일선 하회 (+0점)"))
         except Exception:
-            signals.append(("⚪", "KOSPI 추세 데이터 산출 불가."))
+            details.append(("⚪", "KOSPI 데이터 산출 불가"))
 
     if not usdkrw_hist.empty and len(usdkrw_hist) >= 50:
         try:
@@ -611,21 +651,147 @@ def calculate_kr_recovery_confirmation(kospi_hist, usdkrw_hist):
             ma50_fx = float(usdkrw_hist['Close'].rolling(50).mean().iloc[-1])
             
             if curr_fx < ma20_fx and curr_fx < ma50_fx:
-                signals.append(("🟢", "환율(외인 수급) 안정 — 환율이 20일/50일선 아래에서 하향 안정화되어 외인 자금 유입 환경이 조성되었습니다."))
-                recovery_score += 50
+                details.append(("🟢", "환율 안정 — 20일선 및 50일선 하회 (+50점)"))
+                macro_score += 50
             elif curr_fx < ma20_fx:
-                signals.append(("🟡", "환율 단기 진정 — 환율이 20일선 아래로 내려와 급등세가 진정되었습니다."))
-                recovery_score += 25
+                details.append(("🟡", "환율 진정 중 — 20일선 하회, 50일선 상회 (+25점)"))
+                macro_score += 25
             else:
-                signals.append(("🔴", "환율 불안정 — 환율이 이동평균선 위에 있어 외인 이탈 압력이 여전합니다."))
+                details.append(("🔴", "환율 불안정 — 20일선 상회 (+0점)"))
         except Exception:
-            signals.append(("⚪", "환율 데이터 산출 불가."))
+            details.append(("⚪", "환율 데이터 산출 불가"))
 
-    if recovery_score >= 100: verdict = "🟢 반등 신뢰도 높음 — 추세 회복 + 환율 안정 동시 충족"
-    elif recovery_score >= 50: verdict = "🟡 반등 신뢰도 보통 — 조건 중 일부만 회복"
-    else: verdict = "🔴 반등 신뢰도 낮음 — 아직 회복 신호 부족"
+    if macro_score >= 80:
+        status = "🟢 매크로 안전 (안심 진입 구간)"
+    elif macro_score >= 50:
+        status = "🟡 매크로 조심 (확인 필요)"
+    else:
+        status = "🔴 매크로 위험 (보조 신호 필수)"
 
-    return verdict, signals, recovery_score
+    return macro_score, status, details
+
+
+def calculate_cashflow_signal(foreign_futures, oi_trend, rsp_change_pct, kospi_hist):
+    details = []
+    flow_score = 0
+
+    # 1. 외국인 선물 (30점 만점)
+    if foreign_futures >= 5000:
+        flow_score += 30
+        details.append(("🟢", f"외국인 선물 강력 매수 (+{foreign_futures:,.0f}계약) [+30점]"))
+    elif foreign_futures >= 3500:
+        flow_score += 20
+        details.append(("🟢", f"외국인 선물 뚜렷한 매수 (+{foreign_futures:,.0f}계약) [+20점]"))
+    elif foreign_futures >= 1500:
+        flow_score += 10
+        details.append(("🟡", f"외국인 선물 약한 매수 (+{foreign_futures:,.0f}계약) [+10점]"))
+    else:
+        details.append(("🔴", f"외국인 선물 수급 미달 ({foreign_futures:+,.0f}계약) [+0점]"))
+
+    # 2. KOSPI 5일선 안착 (25점 만점)
+    if not kospi_hist.empty and len(kospi_hist) >= 5:
+        try:
+            close = kospi_hist['Close']
+            curr_k = float(close.iloc[-1])
+            ma5 = float(close.rolling(5).mean().iloc[-1])
+            
+            if curr_k >= ma5:
+                flow_score += 25
+                details.append(("🟢", "KOSPI 5일선 안착 — 단기 모멘텀 회복 [+25점]"))
+            else:
+                details.append(("🔴", "KOSPI 5일선 하회 — 단기 모멘텀 부재 [+0점]"))
+        except Exception:
+            details.append(("⚪", "KOSPI 5일선 산출 불가"))
+    else:
+        details.append(("⚪", "KOSPI 데이터 부족"))
+
+    # 3. 글로벌 RSP 강도 (25점 만점)
+    if rsp_change_pct is not None:
+        if rsp_change_pct >= 0.0:
+            flow_score += 25
+            details.append(("🟢", f"글로벌(RSP) 상승 추세 ({rsp_change_pct:+.2f}%) — 글로벌 투자심리 호조 [+25점]"))
+        elif rsp_change_pct >= -0.5:
+            flow_score += 15
+            details.append(("🟡", f"글로벌(RSP) 약보합 방어 ({rsp_change_pct:+.2f}%) — 거시 방어 성공 [+15점]"))
+        else:
+            details.append(("🔴", f"글로벌(RSP) 하락 감지 ({rsp_change_pct:+.2f}%) — 글로벌 약세 동기화 우려 [+0점]"))
+    else:
+        details.append(("⚪", "RSP 데이터 산출 불가"))
+
+    # 4. 미결제약정 (20점 만점)
+    if oi_trend == "증가 추세":
+        flow_score += 20
+        details.append(("🟢", "미결제약정 증가 — 신규 자금 유입 확인 [+20점]"))
+    else:
+        details.append(("🔴", "미결제약정 감소/정체 — 신규 자금 유입 부족 [+0점]"))
+
+    if flow_score >= 80:
+        status = "🟢 자금흐름 강함 (선발대 투입 신호)"
+    elif flow_score >= 50:
+        status = "🟡 자금흐름 보통 (수급 턴어라운드 시도)"
+    else:
+        status = "🔴 자금흐름 약함 (관망)"
+
+    return flow_score, status, details
+
+
+def calculate_regime_classification(macro_score, flow_score, warning_days_override=None):
+    import os, json, datetime
+    tracker_file = "regime_state.json"
+    today_str = datetime.date.today().strftime("%Y-%m-%d")
+    
+    state = {"last_date": "", "warning_days": 0}
+    if os.path.exists(tracker_file):
+        try:
+            with open(tracker_file, "r") as f:
+                state = json.load(f)
+        except Exception:
+            pass
+            
+    is_warning = (flow_score >= 50 and macro_score < 50)
+    warning_days = state.get("warning_days", 0)
+    last_date = state.get("last_date")
+    
+    if is_warning:
+        if last_date != today_str:
+            warning_days += 1
+            state["warning_days"] = warning_days
+            state["last_date"] = today_str
+            with open(tracker_file, "w") as f:
+                json.dump(state, f)
+    else:
+        if warning_days != 0 or last_date != today_str:
+            state["warning_days"] = 0
+            state["last_date"] = today_str
+            with open(tracker_file, "w") as f:
+                json.dump(state, f)
+        warning_days = 0
+        
+    warning_days = warning_days_override if warning_days_override is not None else max(1, min(5, warning_days)) if is_warning else 0
+    
+    if macro_score >= 80 and flow_score >= 80:
+        regime = "🟢 강력 GO (정배열)"
+        action = "완벽한 추세장. 스나이퍼 예산 즉시 본대 투입 (풀배팅 가능)."
+        color = "#21c354"
+    elif macro_score >= 50 and flow_score >= 50:
+        regime = "🟡 조건부 GO (추세 전환)"
+        action = "20일선 탈환 완료. 본대 자금 분할 진입 시작."
+        color = "#fcca46"
+    elif flow_score >= 50 and macro_score < 50:
+        if warning_days >= 5:
+            regime = "✅ 경고 국면 확정 (5거래일 지지 성공)"
+            action = "매크로 회복(20일선) 임박. 5일선 지지 확인 완료. '선발대(10~15%)' 진입 검토."
+            color = "#ff9900"
+        else:
+            regime = f"⚠️ 경고 국면 (바닥 탈출 시도 - {warning_days}/5일 관찰 중)"
+            action = f"수급이 포착되었습니다. 내일도 5일선 지지 시 관찰 지속 (남은 기간: {5-warning_days}거래일)."
+            color = "#ff9900"
+    else:
+        regime = "🔴 PASS (매수 보류)"
+        action = "매크로 위험 및 자금흐름 약세 지속. 칼날 잡기 금지. 현금 사수."
+        color = "#ff4b4b"
+        
+    return regime, action, color
 
 
 # ═════════════════════════════════════════
@@ -637,166 +803,100 @@ def calculate_kr_recovery_confirmation(kospi_hist, usdkrw_hist):
 def get_strategic_advice(danger_count, bottom_score, bottom_verdict, regime="", recovery_score=None):
     """
     반환: (headline, color, actions[])
-    danger_count: 위험 탐지기 원점수 (US 기준 7+ = 킬스위치, 5+ = 위기, 3+ = 주의)
-    bottom_score: 바닥 탐지기 정규화 점수 (0~100)
-    recovery_score: 반등 신뢰도 (0/25/50/75/100, 한국장은 None)
+    ORION v28.1 — 상황 → 체크리스트 → 타점 안내를 한 흐름으로 전달
     """
     actions = []
     is_knife = "칼날" in bottom_verdict
-    is_top   = "고점권" in bottom_verdict
+    is_top   = "고점" in bottom_verdict
 
-    # ── ① 최우선 순위: 떨어지는 칼날 (점수 무관 매수 보류) ──
+    # 1순위: 떨어지는 칼날 (매수 보류)
     if is_knife:
-        headline = "⚠️ 매수 보류 — 떨어지는 칼날 구간"
+        headline = "🔴 ORION Signal : STOP — 지금은 기다릴 때입니다."
         color = "#ff9900"
         actions = [
-            "지금은 '낙폭'이 아니라 '속도'가 문제입니다. 급락 진행 중 진입은 평균단가만 훼손합니다.",
-            "매수 재개 조건: ① 일봉 양봉 마감 또는 ② 5일선 회복 — 둘 중 하나 확인 후 다음 거래일 진입.",
-            "대기 중 할 일: 매수 후보 리스트와 분할 예산(3회분)을 미리 확정해 두세요. 바닥에서는 생각할 시간이 없습니다.",
+            "급락 진행 중입니다. 속도가 문제인 구간에서는 진입하지 않습니다.",
+            "5일선 회복이 확인되면 아래 체크리스트를 다시 점검하세요.",
+            "기존 포지션은 홀딩합니다. 추가 자금 투입은 보류합니다.",
         ]
 
-    # ── ② 고점권 (바닥 탐지 무의미 구간) ──
+    # 2순위: 고점권 (바닥 점수 무의미)
     elif is_top:
         if danger_count >= 5:
-            headline = "🚨 고점권 + 위험 경보 다발 — 하락 '초입' 최악 조합"
+            headline = "🔴 ORION Signal : STOP — 지금은 매수보다 현금을 지킬 때입니다."
             color = "#ff4b4b"
             actions = [
-                "가장 위험한 조합입니다: 경보는 켜졌는데 낙폭은 아직 얕음 = 빠질 공간이 그대로 남아있는 하락 초입.",
-                "신규 매수 전면 중단. 반등이 나오면 '탈출 기회'로 쓰고 비중을 줄이세요 (7원칙 리밸런싱).",
-                "지킬 종목(펀더멘탈 우수)과 정리할 종목을 지금 분류해 두세요. 폭락 중에는 전부 같이 빠집니다.",
-                "현금 목표: 30% 이상. 이 현금이 다음 '위기 줍줍(6원칙)'의 실탄입니다.",
+                "위험 경보가 다수 감지되었으나 낙폭은 아직 적습니다. 빠질 공간이 남아 있습니다.",
+                "신규 매수를 중단하고, 반등이 나오면 비중 축소 기회로 활용하세요.",
             ]
         elif danger_count >= 3:
-            headline = "🟠 고점권 + 이상 신호 — 신규 진입 자제, 현금 확보 시작"
+            headline = "🟡 ORION Signal : WAIT — 이상 징후가 감지되었습니다."
             color = "#ff9900"
             actions = [
-                "지수는 고점권인데 위험 탐지기에 경고가 쌓이는 중 — 추격 매수의 기대값이 가장 낮은 구간입니다.",
-                "수익 중인 종목 일부 익절로 현금 20~30% 확보. 신규는 '20일선 눌림목 확인' 조건부로만.",
-                "위험 점수가 더 올라가면(🔴 등급) 방어 모드 전환을 준비하세요.",
+                "고점권에서 위험 신호가 포착되었습니다. 추격 매수의 기댓값이 가장 낮은 구간입니다.",
+                "수익 중인 종목 일부 익절로 현금을 확보하세요.",
             ]
         else:
-            headline = "🟢 정상 상승 장세 — 지수 레벨 타점 없음, 개별 종목 장세"
+            headline = "🟢 ORION Signal : CLEAR — 안정적인 흐름입니다."
             color = "#21c354"
             actions = [
-                "바닥 탐지기는 조정장 전용 도구입니다. 지금은 지수가 아니라 '종목'으로 승부하는 구간.",
-                "개별 종목의 20일선 눌림목 + 실적 모멘텀(텐배거 레이더) 위주로 접근하세요.",
-                "평시에도 위기 대비 현금 10~20%는 항상 유지 (6원칙의 전제 조건).",
+                "시장에 이상 신호 없는 안정 구간입니다.",
+                "정해진 원칙에 따라 기계적 분할 매수를 유지하세요.",
+                "종목 레이더에서 눌림목 타점을 확인하고, 조건이 맞으면 진입하세요.",
             ]
 
-    # ── ③ 바닥 점수 70+ : 역사적 바닥권 ──
-    elif bottom_score >= 70:
-        if danger_count >= 5:
-            headline = "🔥 역사적 바닥권 + 시스템 위기 진행 중 — '1차 선발대' 전략 (30%)"
-            color = "#fcca46"
-            actions = [
-                "역사적 과매도 구간이지만 신용경색/킬스위치가 살아있습니다 → 바닥 '근접'이지 '확정'이 아님.",
-                "1차 선발대로 총 예산의 30%만 진입합니다. (하워드 막스 방식: 깊은 가치가 보이면 과감히 담되, 만약을 대비한 현금 확보).",
-                "추가 증액 트리거: 신용 스프레드 🟢 복귀 또는 VIX 백워데이션 해소 — 이게 기관 자금 복귀 신호입니다.",
-                "지수 ETF 절반 + 펀더멘탈 우량주 절반으로 하방을 방어하세요.",
-            ]
-        else:
-            color = "#21c354"
-            if recovery_score is not None and recovery_score < 50:
-                headline = "🔥 강력 매수 구간 — 1차 선발대 투입 타이밍 (30~50%)"
-                actions = [
-                    "역사적 바닥 점수 + 위험 탐지기 진정 = 11원칙 '위기 줍줍'의 본령입니다.",
-                    "단, 뚜렷한 반등 신호가 아직 없으므로, 1차 진입으로 총 예산의 30~50%를 투입하세요.",
-                    "떨어지는 칼날 리스크를 관리하며 평균 단가를 낮출 수 있는 최적의 비중입니다.",
-                    "아래 백테스트 탭에서 이 점수대의 과거 승률을 직접 확인하고 들어가세요 — 확신이 사이즈를 만듭니다.",
-                ]
-            else:
-                headline = "🔥 강력 매수 구간 — 본격 비중 확대 타이밍 (50~70% 이상)"
-                actions = [
-                    "역사적 바닥 + 위험 진정 + 반등 신호 포착 = 최고의 투자 타이밍입니다.",
-                    "총 예산의 50~70% 이상까지 과감히 집행하세요 (이미 1차 선발대가 있다면 2·3차 증액 구간).",
-                    "워런 버핏의 '비가 올 때는 양동이를 내놓아라'라는 원칙이 적용되는 시기입니다.",
-                    "종목 선택: 지수 ETF 절반 + 낙폭과대 우량주(펀더멘탈 점수 4+) 절반 배분이 회복탄력 극대화.",
-                ]
-
-    # ── ④ 50~69 : 분할 매수 접근 구간 ──
-    elif bottom_score >= 50:
-        if danger_count >= 5:
-            headline = "🟡 매수권 점수 + 위험 경보 우세 — 관망 또는 최소 단위만 (10%)"
-            color = "#fcca46"
-            actions = [
-                "점수는 분할 매수권이지만 위기 경보가 우세 → 추가 하락 확률이 여전히 높습니다.",
-                "진입한다면 총 예산의 10% 이내 최소 단위만. '더 빠지면 더 산다'가 성립하는 금액만.",
-                "현금 70% 이상 유지 — 지금 아끼는 현금이 점수 70+에서의 진짜 기회를 삽니다.",
-            ]
-        else:
-            headline = "🟢 1차 분할 매수 타점 — 초기 선발대 진입 (20~30%)"
-            color = "#21c354"
-            actions = [
-                "가치가 돋보이기 시작하는 1차 진입 구간입니다. 단, 바닥 '확인'이 아니라 '접근' 단계 — 몰빵 금지.",
-                "총 예산의 20~30% 규모로 초기 선발대를 투입하세요.",
-                "2차 증액 트리거: ① 점수 70+ 도달 또는 ② 저점 높이기 + 20일선 탈환 동시 확인.",
-                "시간 분산: 다음 분할까지 최소 1~2주 간격. 같은 주에 전 예산 소진이 최다 실수 유형입니다.",
-            ]
-
-    # ── ⑤ 35~49 : 애매 구간 ──
-    elif bottom_score >= 35:
-        headline = "🟡 관망 — 조정 진행 중, 타점 대기"
-        color = "#fcca46"
+    # 3순위: 극단 패닉 (바닥 점수 80+) -> 기회 탐지
+    elif bottom_score >= 80:
+        headline = "🟠 ORION Signal : ALERT — 역사적 바닥권이 감지되었습니다."
+        color = "#e94560"
         actions = [
-            "이 애매한 구간이 계좌를 가장 많이 상하게 합니다. '싸 보인다'는 근거가 아닙니다.",
-            "매수 예약 조건을 미리 설정: 점수 50+ 도달 또는 RSI 30 이하 진입 시 1차 집행.",
-            "위험 탐지기가 🔴 이상이면 조정이 하락장으로 발전할 수 있음 — 현금 추가 확보.",
+            "바닥 탐지 점수가 80점을 넘었습니다. 역사적으로 드문 기회 영역입니다.",
+            "아직 추세 반전이 확인되지 않았습니다. 아래 체크리스트에서 조건을 점검한 뒤, GO 사인이 뜨면 진입하세요.",
+            "종목 레이더의 매수 타점을 확인하고, 검증된 우량주만 대상으로 하세요.",
+            "ORION은 바닥을 감지합니다. 진입 여부는 체크리스트가, 타점은 레이더가 결정합니다.",
+        ]
+        
+    # 4순위: 추세 전환 및 불타기 (바닥 점수 50~79) -> Tier 2
+    elif bottom_score >= 50:
+        gates_ok = (recovery_score is not None and recovery_score >= 2)
+        if gates_ok:
+            headline = "🟡 ORION Signal : GO — 추세 전환이 확인되었습니다."
+            color = "#fcca46"
+            actions = [
+                "바닥 점수와 반등 신뢰도가 모두 충족되었습니다.",
+                "아래 체크리스트에서 최종 GO 사인을 확인한 뒤, 종목 레이더에서 타점을 잡고 분할 진입하세요.",
+                "오후 종가 부근에 집행하여 리스크를 최소화하세요.",
+            ]
+        else:
+            headline = "🟡 ORION Signal : WAIT — 바닥 확인 중이나, 아직 때가 아닙니다."
+            color = "#fcca46"
+            actions = [
+                "바닥 점수는 충분하지만, 반등 신뢰도가 아직 부족합니다.",
+                "수급 전환, 5일선 돌파, 환율 안정 중 2가지 이상이 확인될 때까지 기다립니다.",
+                "기회는 많습니다. 확률이 높을 때만 움직입니다.",
+            ]
+
+    # 5순위: 애매한 하락 (35~49)
+    elif bottom_score >= 35:
+        headline = "⚪ ORION Signal : HOLD — 관망이 최선입니다."
+        color = "#aaaaaa"
+        actions = [
+            "단기 조정이 나왔지만, 바닥이라 부르기엔 아직 이릅니다.",
+            "어설픈 물타기 구간입니다. 기존 포지션만 유지하세요.",
         ]
 
-    # ── ⑥ 35 미만 : 바닥 조건 미충족 ──
+    # 6순위: 평범 (그 외) -> Tier 1
     else:
-        if danger_count >= 5:
-            headline = "🚨 위험 경보 + 낙폭 미달 — 하락 초입 방어 모드"
-            color = "#ff4b4b"
-            actions = [
-                "경보는 켜졌는데 아직 충분히 안 빠졌습니다 = 빠질 공간이 남은 하락 초입 신호.",
-                "신규 매수 전면 중단, 반등 시 비중 축소로 대응 (7원칙 리밸런싱).",
-                "다음 매수는 바닥 탐지기 50+ 부터. 그 전까지 모든 하락은 '구경'입니다.",
-            ]
-        elif danger_count >= 3:
-            headline = "🟠 경계 태세 — 이상 신호 감지, 현금 비중 확대"
-            color = "#ff9900"
-            actions = [
-                "위험 신호가 쌓이는 초기 단계 — 아직 패닉은 아니지만 공격할 때도 아닙니다.",
-                "신규 매수는 보류하고, 보유 종목 중 펀더멘탈 약한 것부터 정리 우선순위를 정하세요.",
-                "현금 20~30% 확보 시작. 경보 해제(🟢/🟡 복귀) 시 정상 매매 재개.",
-            ]
-        else:
-            headline = "🟢 평시 국면 — 지수 타점 없음, 정상 매매 유지"
-            color = "#21c354"
-            actions = [
-                "위험도 바닥 신호도 없는 평시입니다. 지수 타이밍 베팅은 무의미한 구간.",
-                "개별 종목의 눌림목/실적 기반 매매에 집중하고, 위기 대비 현금 10~20%만 유지하세요.",
-            ]
-
-    # ── 국면(Regime)별 특이사항 추가 ──
-    if "Grinding" in regime:
-        actions.append("🐻 국면 특이사항: 완만한 하락(Grinding Bear)은 V자 반등이 드뭅니다. 분할 간격을 평소의 2배로 넓히고(시간 분산 강화), 총알을 아끼세요.")
-    if "Whipsaw" in regime:
-        actions.append("🌊 국면 특이사항: 고변동 횡보에서는 추격 매매 승률이 급락합니다. 매수는 미리 정한 '가격 레벨'에 지정가로만 — 장중 추격 금지.")
-    if "다지기" in regime:
-        actions.append("🏗️ 국면 특이사항: 저점 높이기가 유지되는 한 눌림목마다 분할 매수 유효. 단, 직전 저점 이탈 시 시나리오 폐기 후 재관망.")
-
-    # ── 반등 신뢰도(Breadth/Credit)로 증액 여부 미세 조정 ──
-    if recovery_score is not None and bottom_score >= 50 and not is_knife:
-        if recovery_score >= 100:
-            actions.append("✅ 반등 신뢰도 교차검증: 주요 지표 동시 회복 — 2·3차 증액의 객관적 근거 충족.")
-        elif recovery_score >= 50:
-            actions.append("🟡 반등 신뢰도 교차검증: 절반만 회복 — 1차 포지션 유지, 증액은 완전 회복 확인 후.")
-        else:
-            actions.append("🔴 반등 신뢰도 교차검증: 미회복 — 지금 반등은 기술적 반등(데드캣)일 수 있음. 1차 이상 넣지 마세요.")
-
-    # ── 대가의 퀀트 원칙 (장초 추격 매수 금지 & 종가 확인) ──
-    actions.append("🕒 [대가의 타점 원칙] 당일 점수가 아무리 좋아도 다음날 장초 갭상승이나 추격 매수는 절대 금물입니다. 진입 타점은 '오후 2시 30분 이후 종가 무렵'에 확인하고 진입하세요.")
-    if is_knife or danger_count >= 5:
-        actions.append("🛡️ [생존 원칙] 현재처럼 불안정한 구간에서는 '장중 반등'은 속임수일 확률이 높습니다. 반드시 종가 기준 지지 여부를 확인하고 다음 날 판단하세요.")
+        headline = "🟢 ORION Signal : CLEAR — 평이한 시장입니다."
+        color = "#21c354"
+        actions = [
+            "큰 패닉이나 과열이 없는 일상적인 시장입니다.",
+            "종목 레이더에서 눌림목 타점을 확인하고, 원칙에 따라 기계적으로 매수하세요.",
+        ]
 
     return headline, color, actions
 
 
-# ═════════════════════════════════════════
-# 백테스트 — 실시간과 '동일한 스코어러 + 동일한 구조 보너스 + 동일한 칼날 패널티' 사용
-# ═════════════════════════════════════════
+
 def run_historical_backtest(spy_hist, vix_hist, vix3m_hist):
     if any(df.empty for df in [spy_hist, vix_hist, vix3m_hist]):
         return None
@@ -1277,11 +1377,33 @@ def generate_economic_commentary(summary_dict, phase):
     try:
         from google import genai
         client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-        )
-        return response.text.strip()
+        
+        models_to_try = [
+            "gemini-2.5-pro",          # 1순위: 2.5 Pro (최상급 브레인)
+            "gemini-3.5-flash",        # 2순위: 3.5 Flash (강력한 신형 Flash)
+            "gemini-3.1-flash-lite",   # 3순위: 3.1 Flash Lite (확인된 안정 모델)
+            "gemini-2.5-flash-lite",   # 4순위: 2.5 Flash Lite
+            "gemini-pro-latest",
+            "gemini-flash-latest"
+        ]
+        
+        response = None
+        successful_model = None
+        for model_name in models_to_try:
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                )
+                successful_model = model_name
+                break
+            except:
+                continue
+                
+        if response:
+            return f"*(사용된 CFO AI 모델: {successful_model})*\n\n" + response.text.strip()
+        else:
+            raise Exception("모든 신규 SDK 모델 호출 실패")
     except Exception as e1:
         print(f"[google-genai 시도 실패]: {e1}")
     
@@ -1290,14 +1412,27 @@ def generate_economic_commentary(summary_dict, phase):
         import google.generativeai as genai_old
         genai_old.configure(api_key=api_key)
         
-        model = genai_old.GenerativeModel("gemini-2.5-flash")
-        safety_settings = [
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-        ]
-        response = model.generate_content(prompt, safety_settings=safety_settings)
+        response = None
+        successful_model = None
+        for old_model in ["gemini-2.5-pro", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-flash-latest", "gemini-pro-latest"]:
+            try:
+                model = genai_old.GenerativeModel(old_model)
+                safety_settings = [
+                    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+                ]
+                response = model.generate_content(prompt, safety_settings=safety_settings)
+                if response and response.text:
+                    successful_model = old_model
+                    break
+            except:
+                continue
+        if response and response.text:
+            return f"*(사용된 CFO AI 모델: {successful_model} - 구형)*\n\n" + response.text.strip()
+        else:
+            raise Exception("모든 구형 SDK 모델 호출 실패")
         return response.text.strip()
     except Exception as e2:
         import traceback
@@ -1379,6 +1514,8 @@ def get_ai_signal(d):
     macd = d.get('MACD_dir') or ""
     roe  = d.get('ROE')
     op_m = d.get('Op_Margin')
+    change = d.get('Change', 0)
+    ma5 = d.get('MA5', cp)
 
     if rsi is None or cp is None or ma20 is None: return "⚪ 데이터 부족 (판단 보류)"
 
@@ -1386,7 +1523,11 @@ def get_ai_signal(d):
     cp_f     = float(cp)
     ma20_f   = float(ma20)
     vol_f    = float(vol) if vol is not None else 100.0
+    change_f = float(change)
+    ma5_f    = float(ma5)
+    
     ma20_gap = (cp_f - ma20_f) / ma20_f * 100
+    ma5_gap  = (cp_f - ma5_f) / ma5_f * 100 if ma5_f > 0 else 0
 
     roe_f  = float(roe)  if roe  is not None else None
     op_m_f = float(op_m) if op_m is not None else None
@@ -1395,8 +1536,12 @@ def get_ai_signal(d):
 
     if rsi_f >= 75 and ma20_gap > 15: return "🔵 과매수 (익절/관망)"
     if 60 <= rsi_f < 75 and cp_f > ma20_f and "상승" in macd and vol_f > 120: return "🚀 추세 탑승 (불타기)"
-    if 45 <= rsi_f < 60 and cp_f >= ma20_f: return "🟢 얕은 눌림목 (분할매수)"
-    if rsi_f < 45: return "🔥 바닥 줍줍 (적극매수)"
+    if 40 <= rsi_f < 60 and cp_f >= ma20_f * 0.95: return "🟢 상승장 눌림목 (GTC 대기)"
+    if rsi_f < 40:
+        # 떨어지는 칼날 방어
+        if change_f <= -3.0 or ma5_gap <= -4.0:
+            return "⚠️ 떨어지는 칼날 (매수 대기)"
+        return "🔥 바닥 줍줍 (적극매수)"
     return "🟡 방향성 탐색 (관망)"
 
 
@@ -1406,11 +1551,22 @@ def calculate_smart_target(d, ai_sig):
     ma20     = d.get('MA20', cp)
     bb_upper = d.get('BB_upper', cp)
     bb_lower = d.get('BB_lower', cp)
-    if "추세 탑승"  in ai_sig: return max(ma5, cp * 0.98), "5일선 지지"
-    elif "눌림목"   in ai_sig: return ma20,     "20일선 스윙"
-    elif "바닥 줍줍" in ai_sig: return bb_lower, "볼린저 하단"
-    elif "과매수"   in ai_sig: return bb_upper,  "볼린저 상단"
-    else: return "-", "홀딩(Wait)"
+    
+    if cp is None or ma20 is None or bb_lower is None: return "-", "데이터 부족"
+    
+    if "추세 탑승"  in ai_sig: 
+        return max(ma5, cp * 0.98), "5일선 지지"
+    elif "눌림목"   in ai_sig: 
+        if cp > ma20:
+            return ma20, "20일선 부근 GTC"
+        else:
+            return bb_lower, "20선 하회 (볼린저하단 GTC)"
+    elif "바닥 줍줍" in ai_sig: 
+        return bb_lower, "볼린저 하단 GTC"
+    elif "과매수"   in ai_sig: 
+        return bb_upper,  "볼린저 상단"
+    else: 
+        return "-", "홀딩(Wait)"
 
 
 def get_tenbagger_signal(d):

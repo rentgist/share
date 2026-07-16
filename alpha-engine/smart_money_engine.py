@@ -1,12 +1,3 @@
-"""
-smart_money_engine.py
-─────────────────────
-세력(외인/기관) 매집 다이버전스 탐지기
-- 주가 하락 중에 외인+기관이 공격적으로 순매수하는 종목을 발굴
-- 데이터 소스: FinanceDataReader (주가/거래량) + Naver Finance JSON API (외인/기관 수급)
-- 수급 데이터를 못 가져오면 거래량 이상 신호만으로 부분 점수 산출 (graceful degradation)
-"""
-
 import os
 import json
 import requests
@@ -15,58 +6,50 @@ import FinanceDataReader as fdr
 from datetime import datetime, timedelta
 import pytz
 import time
+import math
 
 KST = pytz.timezone("Asia/Seoul")
 DATA_DIR    = "data"
 REPORT_FILE = os.path.join(DATA_DIR, "smart_money_report.md")
 TOP_N       = 10
 
-# ─── 추적 대상 종목 ───────────────────────────────────────────────
-WATCHLIST = [
-    {"name": "삼성전자",       "code": "005930"},
-    {"name": "SK하이닉스",     "code": "000660"},
-    {"name": "POSCO홀딩스",   "code": "005490"},
-    {"name": "현대차",         "code": "005380"},
-    {"name": "카카오",         "code": "035720"},
-    {"name": "LG에너지솔루션", "code": "373220"},
-    {"name": "기아",           "code": "000270"},
-    {"name": "NAVER",          "code": "035420"},
-    {"name": "삼성바이오로직스","code": "207940"},
-    {"name": "셀트리온",       "code": "068270"},
-    {"name": "현대모비스",     "code": "012330"},
-    {"name": "KB금융",         "code": "105560"},
-    {"name": "신한지주",       "code": "055550"},
-    {"name": "LG화학",         "code": "051910"},
-    {"name": "삼성SDI",        "code": "006400"},
-]
-
-# ─── Naver Finance 수급 API ──────────────────────────────────────
-NAVER_FRGN_URL = "https://finance.naver.com/item/frgn.naver"
-
-def _fetch_naver_investor_flow(code: str, days: int = 10) -> dict:
+def _get_dynamic_watchlist(top_n=30) -> list:
     """
-    Naver Finance에서 외인/기관 순매수 데이터를 가져온다.
-    반환: {"외인순매수_억": float, "기관순매수_억": float}
-    실패 시 None 반환
+    KOSDAQ 시가총액 500억 ~ 5000억 사이의 중소형주 중
+    당일 거래량 상위 종목을 추출하여 타겟 유니버스로 설정합니다.
+    작전 세력이 개입하기 좋은 타겟입니다.
     """
+    print("  [유니버스 생성] KOSDAQ 중소형주 스캔 중...")
+    try:
+        df = fdr.StockListing('KOSDAQ')
+        # 시총(Marcap) 500억 ~ 5000억 (50,000,000,000 ~ 500,000,000,000)
+        df['Marcap'] = pd.to_numeric(df['Marcap'], errors='coerce')
+        df['Volume'] = pd.to_numeric(df['Volume'], errors='coerce')
+        
+        filtered = df[(df['Marcap'] >= 50000000000) & (df['Marcap'] <= 500000000000)]
+        # 거래량 기준 정렬하여 시장의 관심을 받는 종목 추출
+        filtered = filtered.sort_values('Volume', ascending=False).head(top_n)
+        
+        watchlist = []
+        for _, row in filtered.iterrows():
+            watchlist.append({"name": row['Name'], "code": str(row['Code']).zfill(6)})
+        return watchlist
+    except Exception as e:
+        print(f"  [유니버스 생성 실패] {e}")
+        return []
+
+def _fetch_naver_investor_flow(code: str, days: int = 5) -> dict:
     try:
         headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
-            ),
-            "Referer": f"https://finance.naver.com/item/main.naver?code={code}",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
         }
-        # Naver 외인/기관 거래 내역 페이지 (HTML 파싱)
         url = f"https://finance.naver.com/item/frgn.naver?code={code}"
         resp = requests.get(url, headers=headers, timeout=5)
         resp.encoding = "euc-kr"
 
         tables = pd.read_html(resp.text)
-        # 보통 두 번째 테이블이 일별 외인/기관 순매수
         for tbl in tables:
             cols = [str(c) for c in tbl.columns]
-            # 컬럼명에 '외국인' 또는 '기관' 포함 여부 확인
             has_frgn = any("외국인" in c or "외인" in c for c in cols)
             has_inst = any("기관" in c for c in cols)
             if has_frgn or has_inst:
@@ -76,16 +59,10 @@ def _fetch_naver_investor_flow(code: str, days: int = 10) -> dict:
 
                 def to_억(series):
                     try:
-                        cleaned = (
-                            series.astype(str)
-                            .str.replace(",", "")
-                            .str.replace("+", "")
-                            .str.strip()
-                        )
+                        cleaned = series.astype(str).str.replace(",", "").str.replace("+", "").str.strip()
                         nums = pd.to_numeric(cleaned, errors="coerce").dropna()
-                        # Naver는 백만원 단위 → 억원 변환
-                        return round(float(nums.sum()) / 100, 1)
-                    except Exception:
+                        return round(float(nums.sum()) / 100, 1) # 백만원 단위 -> 억원
+                    except:
                         return 0.0
 
                 return {
@@ -93,201 +70,187 @@ def _fetch_naver_investor_flow(code: str, days: int = 10) -> dict:
                     "기관순매수_억": to_억(tbl[inst_col]) if inst_col else 0.0,
                 }
         return None
-    except Exception as e:
-        print(f"  [수급 API 실패] {code}: {e}")
+    except:
         return None
 
-
-# ─── 주가/거래량 데이터 ──────────────────────────────────────────
-def _fetch_price_data(code: str) -> dict | None:
-    """
-    FinanceDataReader로 30일 주가/거래량 데이터를 가져온다.
-    반환: {등락률_5일, 거래량증가율, 20일선이격도}
-    """
+def _analyze_stealth_accumulation(code: str) -> dict | None:
     try:
         end   = datetime.now(KST).strftime("%Y-%m-%d")
-        start = (datetime.now(KST) - timedelta(days=60)).strftime("%Y-%m-%d")
+        start = (datetime.now(KST) - timedelta(days=40)).strftime("%Y-%m-%d")
         df = fdr.DataReader(code, start=start, end=end)
         if df is None or len(df) < 25:
             return None
 
         df = df.sort_index()
         close = df["Close"]
+        vol = df["Volume"]
 
-        # 5일 등락률
         change_5d = round((close.iloc[-1] / close.iloc[-6] - 1) * 100, 2) if len(close) >= 6 else 0.0
-
-        # 20일 이동평균 이격도 (현재가/MA20 * 100)
-        ma20 = close.rolling(20).mean().iloc[-1]
-        ma20_dist = round((close.iloc[-1] / ma20) * 100, 1) if ma20 > 0 else 100.0
-
-        # 거래량 증가율 (최근 5일 평균 / 직전 25일 평균)
-        vol = df["Volume"] if "Volume" in df.columns else df.get("거래량", pd.Series())
-        if len(vol) >= 30:
-            recent_vol  = vol.iloc[-5:].mean()
-            baseline_vol = vol.iloc[-30:-5].mean()
-            vol_ratio = round(recent_vol / baseline_vol, 2) if baseline_vol > 0 else 1.0
-        else:
-            vol_ratio = 1.0
+        
+        # 최근 5일간 매집봉(거래량 폭증 + 윗꼬리) 탐지
+        has_volume_spike = False
+        has_upper_wick = False
+        
+        for i in range(-5, 0):
+            if len(df) + i < 20: continue
+            
+            # 20일 평균 거래량
+            ma20_vol = vol.iloc[i-20:i].mean()
+            if ma20_vol == 0: continue
+            
+            daily_vol = vol.iloc[i]
+            if daily_vol >= ma20_vol * 2.5: # 2.5배 이상 폭증
+                has_volume_spike = True
+                
+                # 윗꼬리 계산: (고가 - max(시가, 종가)) / (고가 - 저가)
+                high = df["High"].iloc[i]
+                low = df["Low"].iloc[i]
+                open_p = df["Open"].iloc[i]
+                close_p = df["Close"].iloc[i]
+                
+                body_top = max(open_p, close_p)
+                wick_len = high - body_top
+                total_len = high - low
+                
+                if total_len > 0 and (wick_len / total_len) >= 0.4: # 윗꼬리가 전체의 40% 이상
+                    has_upper_wick = True
 
         return {
-            "등락률_5일":  change_5d,
-            "20일선이격도": ma20_dist,
-            "거래량증가율": vol_ratio,
+            "등락률_5일": change_5d,
+            "매집봉발생": has_volume_spike,
+            "윗꼬리발생": has_upper_wick,
         }
-    except Exception as e:
-        print(f"  [주가 데이터 실패] {code}: {e}")
+    except:
         return None
 
+def calculate_speculative_score(price_data: dict, flow_data: dict | None) -> float:
+    change_5d = price_data.get("등락률_5일", 0)
+    has_spike = price_data.get("매집봉발생", False)
+    has_wick  = price_data.get("윗꼬리발생", False)
 
-# ─── 다이버전스 점수 산출 ────────────────────────────────────────
-def calculate_divergence_score(price_data: dict, flow_data: dict | None) -> float:
-    """
-    핵심 다이버전스 공식:
-    - 주가 하락 중이면서 (change_5d < 0)
-    - 외인+기관 순매수가 양수이면 (net_buy > 0)
-    → 하락폭 × 순매수 규모 × 보너스 팩터
-
-    수급 데이터 없는 경우: 거래량 이상 신호만으로 부분 점수
-    """
-    change_5d  = price_data.get("등락률_5일", 0)
-    vol_ratio  = price_data.get("거래량증가율", 1.0)
-    ma20_dist  = price_data.get("20일선이격도", 100)
-
-    # 주가가 하락 중이어야 함
-    if change_5d >= 0:
+    # 1. 횡보 및 하락 범위 완화 (-12% ~ +15%)
+    # 매집봉 당일 급등을 고려하여 상한선을 +15%로 상향 조정합니다.
+    if not (-12.0 <= change_5d <= 15.0):
         return 0.0
 
+    # 2. 기술적 매집 패턴 점수 (가장 직관적인 세력의 거래량/캔들 흔적)
+    tech_score = 0.0
+    if has_spike:
+        tech_score += 15.0
+    if has_wick:
+        tech_score += 10.0
+
+    # 3. 메이저 수급 확인 (외인+기관)
+    flow_score = 0.0
     if flow_data:
         net_buy = flow_data.get("외인순매수_억", 0) + flow_data.get("기관순매수_억", 0)
-        if net_buy <= 0:
-            return 0.0
+        if net_buy > 0:
+            # 수급 유입 시 가산점
+            flow_score = net_buy * 1.5
+        else:
+            # 수급이 음수(매도)이더라도 기술적 매집 패턴(매집봉+윗꼬리)이 동시에 떴다면
+            # 차명계좌(개인 창구)를 통한 세력 개입 가능성을 열어두고 통과시킵니다. (약간의 감점 적용)
+            if has_spike and has_wick:
+                flow_score = -2.0
+            else:
+                # 매집 패턴도 없는데 메이저 수급도 매도세라면 탈락
+                return 0.0
 
-        # 기본 점수: 하락폭(절댓값) × 순매수 (단위: 억)
-        # 정규화: 로그 스케일로 대형주 독점 방지
-        import math
-        log_net_buy = math.log1p(net_buy)           # 로그 스케일 (큰 값의 지배 완화)
-        base_score  = abs(change_5d) * log_net_buy
+    total_score = tech_score + flow_score
+    return round(max(total_score, 0.0), 2)
 
-        # 보너스: 거래량 급증 (강한 수급 확인)
-        if vol_ratio >= 2.0:
-            base_score *= 1.6
-        elif vol_ratio >= 1.5:
-            base_score *= 1.3
-
-        # 보너스: 20일선 아래 (눌림목 매집)
-        if ma20_dist < 97:
-            base_score *= 1.2
-
-        return round(base_score, 2)
-
-    else:
-        # 수급 데이터 없을 때: 거래량 이상 + 하락폭만으로 부분 점수
-        if vol_ratio < 1.5:
-            return 0.0
-        partial = abs(change_5d) * (vol_ratio - 1.0) * 5
-        return round(partial, 2)
-
-
-# ─── 메인 ────────────────────────────────────────────────────────
 def main():
     os.makedirs(DATA_DIR, exist_ok=True)
     now_str = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-    print(f"\n🔍 스마트 머니 엔진 실행: {now_str}\n")
+    print(f"\n🔍 스나이퍼(작전/세력) 탐지기 실행: {now_str}\n")
+
+    watchlist = _get_dynamic_watchlist(top_n=30)
+    if not watchlist:
+        print("  [에러] 타겟 종목을 추출하지 못했습니다.")
+        return
 
     results = []
-    for stock in WATCHLIST:
+    for stock in watchlist:
         name = stock["name"]
         code = stock["code"]
-        print(f"  [{name} ({code})] 데이터 수집 중...")
+        print(f"  [{name} ({code})] 탐지 중...")
 
-        price_data = _fetch_price_data(code)
+        price_data = _analyze_stealth_accumulation(code)
         if not price_data:
-            print(f"    ⚠ 주가 데이터 없음 — 스킵")
             continue
 
         flow_data = _fetch_naver_investor_flow(code, days=5)
-        data_source = "주가+수급" if flow_data else "주가(수급 미수신)"
-
-        score = calculate_divergence_score(price_data, flow_data)
+        score = calculate_speculative_score(price_data, flow_data)
 
         if score > 0:
             results.append({
-                "종목명":     name,
-                "코드":       code,
+                "종목명": name,
+                "코드": code,
                 "다이버전스점수": score,
-                "등락률_5일": price_data.get("등락률_5일", 0),
-                "외인순매수_억": flow_data.get("외인순매수_억", 0) if flow_data else "N/A",
-                "기관순매수_억": flow_data.get("기관순매수_억", 0) if flow_data else "N/A",
-                "20일선이격도": price_data.get("20일선이격도", 100),
-                "거래량증가율": price_data.get("거래량증가율", 1.0),
-                "데이터소스":  data_source,
+                "등락률_5일": price_data["등락률_5일"],
+                "외인순매수_억": flow_data["외인순매수_억"] if flow_data else 0,
+                "기관순매수_억": flow_data["기관순매수_억"] if flow_data else 0,
+                "매집봉": "🚨포착" if price_data["매집봉발생"] else "-",
+                "윗꼬리": "🚨포착" if price_data["윗꼬리발생"] else "-",
             })
-            print(f"    ✅ 다이버전스 {score}점 ({data_source})")
-        else:
-            print(f"    — 다이버전스 없음")
+            print(f"    ✅ 세력 매집 시그널 포착! (점수: {score})")
+        
+        time.sleep(0.3)
 
-        time.sleep(0.5)  # Naver 요청 속도 제한
-
-    # 점수 내림차순 정렬
     results.sort(key=lambda x: x["다이버전스점수"], reverse=True)
     top_results = results[:TOP_N]
 
-    # ─── Markdown 리포트 생성 ────────────────────────────────────
     lines = [
-        f"# 🔥 세력 매집 다이버전스 리포트",
+        f"# 🔥 코스닥 스나이퍼: 작전 세력 매집 탐지 리포트",
         f"",
-        f"> 주가는 하락 중이나 외인+기관이 공격적으로 매집 중인 **진짜 다이버전스** 종목 리스트입니다.",
+        f"> **타겟:** 시가총액 500억~5,000억 사이의 코스닥 중소형주",
+        f"> **로직:** 주가 횡보 구간에서 발생하는 수상한 수급(외인/기관 위장 사모펀드)과 윗꼬리 매집봉(Volume Spike)을 추적합니다.",
         f"> 데이터 기준: 최근 5영업일 / 분석 일시: {now_str} (KST)",
         f"",
     ]
 
     if not top_results:
         lines += [
-            "## 📭 다이버전스 감지 종목 없음",
+            "## 📭 세력 매집 감지 종목 없음",
             "",
-            "현재 추적 중인 종목 중 '주가 하락 + 세력 매집' 패턴이 감지된 종목이 없습니다.",
-            "시장이 전반적으로 상승 중이거나 수급 데이터 수신에 일시적 문제가 있을 수 있습니다.",
+            "현재 코스닥 중소형주 타겟 그룹에서 뚜렷한 매집봉과 기관/외인 동반 매집 패턴이 감지된 종목이 없습니다.",
+            "*pykrx(거래소 API) 차단으로 인해 네이버 금융 데이터를 기반으로 산출되었습니다.*",
         ]
     else:
         lines += [
-            f"## 💡 다이버전스 Top {len(top_results)} 종목",
+            f"## 💡 세력 매집 Top {len(top_results)} 종목",
             "",
-            "| 순위 | 종목명 | 점수 | 5일등락 | 외인순매수(억) | 기관순매수(억) | 20일선이격 | 거래량증가 | 데이터 |",
-            "|------|--------|------|---------|--------------|--------------|----------|----------|------|",
+            "| 순위 | 종목명 | 스나이퍼점수 | 5일등락 | 외인순매수(억) | 기관순매수(억) | 거래량폭증 | 윗꼬리(물량뺏기) |",
+            "|------|--------|-------------|---------|--------------|--------------|----------|----------------|",
         ]
         for i, r in enumerate(top_results, 1):
-            frgn = f"{r['외인순매수_억']:+.0f}" if isinstance(r["외인순매수_억"], (int, float)) else r["외인순매수_억"]
-            inst = f"{r['기관순매수_억']:+.0f}" if isinstance(r["기관순매수_억"], (int, float)) else r["기관순매수_억"]
             lines.append(
                 f"| {i} | {r['종목명']} | **{r['다이버전스점수']}** "
                 f"| {r['등락률_5일']:+.1f}% "
-                f"| {frgn} "
-                f"| {inst} "
-                f"| {r['20일선이격도']:.1f} "
-                f"| {r['거래량증가율']:.1f}x "
-                f"| {r['데이터소스']} |"
+                f"| {r['외인순매수_억']:+.1f} "
+                f"| {r['기관순매수_억']:+.1f} "
+                f"| {r['매집봉']} "
+                f"| {r['윗꼬리']} |"
             )
 
         lines += [
             "",
             "---",
             "",
-            "## 🔎 AI CFO 로직 & 해석 가이드",
+            "## 🔎 스나이퍼 로직 & 해석 가이드",
             "",
-            "- **다이버전스 점수** = `abs(5일등락률) × log(외인+기관 순매수) × 보너스팩터` (로그 스케일 정규화 적용)",
-            "- 거래량이 평균 2배 이상 폭증 시 → 점수 ×1.6 (강력한 세력 개입 신호)",
-            "- 20일선 아래(이격도 < 97) 매집 시 → 점수 ×1.2 (눌림목 저가 매집)",
-            "- **⚠ 필수 교차검증**: 악재성 공시(유상증자/배임/소송 등) 여부는 반드시 확인 후 판단",
-            "- **수급 미수신** 표시 종목: Naver 서버 일시 오류. 거래량 신호만으로 부분 계산된 결과임.",
+            "- **타겟:** KOSDAQ 시가총액 500억~5000억 사이 거래량 급증 종목 30개 동적 스캔.",
+            "- **점수:** `순매수(억) × 매집봉 발생(2배) × 윗꼬리 발생(1.5배)`",
+            "- **매집봉(거래량폭증):** 최근 5일 내에 20일 평균 대비 거래량이 2.5배 이상 폭증한 날이 존재함.",
+            "- **윗꼬리(물량뺏기):** 매집봉 발생 당일, 캔들의 윗꼬리가 전체의 40% 이상을 차지함. (세력이 고가에서 개인 물량을 뺏은 전형적 패턴)",
+            "- **수급 주체:** 중소형주의 경우 '기관/외국인' 창구를 통해 사모펀드나 기타 세력 자금이 위장 진입하는 경우가 많습니다.",
+            "- **⚠ 주의:** 재무가 극히 부실한 '환기종목'이거나 전환사채(CB) 폭탄이 있는 종목은 제외하고 보셔야 합니다.",
         ]
 
     with open(REPORT_FILE, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
 
     print(f"\n📄 리포트 저장 완료: {REPORT_FILE}")
-    print(f"   총 다이버전스 종목: {len(results)}개 → Top {len(top_results)}개 선정")
-
 
 if __name__ == "__main__":
     main()

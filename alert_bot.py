@@ -7,8 +7,10 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 import google.generativeai as genai
 
-os.environ['TZ'] = 'Asia/Seoul'
-time.tzset()
+import sys
+if sys.platform != 'win32':
+    os.environ['TZ'] = 'Asia/Seoul'
+    time.tzset()
 
 from data_loader import get_macro_charts, get_real_cnn_fg, get_stock_data
 from signals import (
@@ -45,6 +47,9 @@ TARGET_STOCKS = [
     ("LS ELECTRIC",  True),
 ]
 
+# ─────────────────────────────────────────
+# 텐배거 스크리닝 유니버스
+# ─────────────────────────────────────────
 TENBAGGER_UNIVERSE = {
     "🇺🇸 미국 AI & 클라우드":      ["PLTR","CRWD","SNOW","DDOG","NET","SOUN","MDB","ZS","MNDY"],
     "🇺🇸 미국 혁신성장":           ["IONQ","SOFI","RIVN","CELH","RKLB","ASTS","CRSP","LUNR","SYM","HOOD"],
@@ -299,12 +304,13 @@ def run_alert_logic() -> None:
     us_score, us_verdict, us_details, us_phase = (0, "데이터 없음", [], "알 수 없음")
     us_risk_grade, _, us_risk_alerts, us_danger = ("N/A", "#aaa", [], 0)
 
-    spy  = charts.get("SPY",  None)
-    vix  = charts.get("^VIX", None)
-    vix3m = charts.get("^VIX3M", None)
-    hyg  = charts.get("HYG", None)
-    ief  = charts.get("IEF", None)
-    rsp  = charts.get("RSP", None)
+    # 키 이름은 get_macro_charts()의 별칭(aliased) 키와 반드시 일치해야 함
+    spy   = charts.get("spy_10y",   None)
+    vix   = charts.get("vix_10y",   None)
+    vix3m = charts.get("vix3m_10y", None)
+    hyg   = charts.get("hyg_10y",   None)
+    ief   = charts.get("ief_10y",   None)
+    rsp   = charts.get("rsp_10y",   None)
 
     if spy is not None and vix is not None:
         us_score, us_verdict, us_details, us_phase = calculate_us_bottom_finder(spy, vix, cnn_score)
@@ -334,9 +340,9 @@ def run_alert_logic() -> None:
     kr_score, kr_verdict, kr_details, kr_phase = (0, "데이터 없음", [], "알 수 없음")
     kr_risk_grade, _, kr_risk_alerts, kr_danger = ("N/A", "#aaa", [], 0)
 
-    ks11    = charts.get("KS11",      None)
-    vkospi  = charts.get("^VKOSPI",   None)
-    usdkrw  = charts.get("USDKRW=X",  None)
+    ks11   = charts.get("kospi_10y",  None)
+    vkospi = charts.get("vkospi_10y", None)
+    usdkrw = charts.get("usdkrw_10y", None)
 
     if ks11 is not None and vkospi is not None and usdkrw is not None:
         kr_score, kr_verdict, kr_details, kr_phase = calculate_kr_bottom_finder(ks11, vkospi, usdkrw)

@@ -1,4 +1,7 @@
+from dotenv import load_dotenv
+load_dotenv()
 import streamlit as st
+import calendar_manager
 import pandas as pd
 import concurrent.futures
 import numpy as np
@@ -15,6 +18,14 @@ from data_loader import (
     get_investor_flow,
     get_1m_investor_flow
 )
+import sys
+if "signals" in sys.modules:
+    import importlib
+    importlib.reload(sys.modules["signals"])
+if "data_loader" in sys.modules:
+    import importlib
+    importlib.reload(sys.modules["data_loader"])
+
 try:
     from signals import (
         calculate_us_risk_radar,
@@ -22,7 +33,9 @@ try:
         calculate_us_bottom_finder,
         calculate_kr_bottom_finder,
         calculate_recovery_confirmation,
-        calculate_kr_recovery_confirmation,
+        calculate_macro_risk_gauge,
+        calculate_cashflow_signal,
+        calculate_regime_classification,
         get_strategic_advice,
         run_historical_backtest,
         run_kr_historical_backtest,
@@ -41,8 +54,26 @@ except Exception as e:
     st.error(f"🚨 알 수 없는 오류 발생: {e}")
     st.stop()
 
+st.set_page_config(page_title="ORION", page_icon="🛰", layout="wide")
 
-st.set_page_config(page_title="11원칙 퀀트 대시보드 v24.0", page_icon="🧭", layout="wide")
+# AI 리포트 전용 고대비 스타일 주입
+st.markdown("""
+<style>
+    /* AI 리포트 영역 내의 본문 글씨를 선명한 검은색(#000000)으로 변경 */
+    .ai-report-container, .ai-report-container p, .ai-report-container li {
+        color: #000000 !important;
+        font-size: 1.05rem !important;
+        line-height: 1.7 !important;
+    }
+    /* AI 리포트 영역 내의 소제목 색상 및 강조 */
+    .ai-report-container h1, .ai-report-container h2, .ai-report-container h3 {
+        color: #0f172a !important;
+        font-weight: 800 !important;
+        margin-top: 15px !important;
+        margin-bottom: 10px !important;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────
 # 포맷 및 색상 맵핑
@@ -101,8 +132,8 @@ def color_df(val):
 # ─────────────────────────────────────────
 # UI — 전역 데이터 선초기화
 # ─────────────────────────────────────────
-st.title("🧭 11원칙 퀀트 트레이딩 대시보드 v24.0")
-st.caption("v24.0: 매크로 게이트키퍼 Tier 시스템 탑재 — 극단 패닉 선발대(Tier 3) / 추세전환 불타기(Tier 2) / 코어 적립(Tier 1) 실시간 판정")
+st.title("🛰 ORION")
+st.caption("확률이 충분하지 않은 거래는 하지 않습니다.")
 
 cnn_score, cnn_rating, cnn_history = get_real_cnn_fg()
 sector_base = get_sector_baseline()
@@ -110,20 +141,390 @@ spy_rsi_val = sector_base.get("S&P 500 (SPY)")
 
 macro_charts = get_macro_charts()
 usd_krw      = macro_charts.get("usdkrw_10y", pd.DataFrame())
+kospi_10y    = macro_charts.get("kospi_10y", pd.DataFrame())
+vkospi_10y   = macro_charts.get("vkospi_10y", pd.DataFrame())
+spy_10y      = macro_charts.get("spy_10y", pd.DataFrame())
+vix_10y      = macro_charts.get("vix_10y", pd.DataFrame())
+vix3m_10y    = macro_charts.get("vix3m_10y", pd.DataFrame())
+hyg_10y      = macro_charts.get("hyg_10y", pd.DataFrame())
+ief_10y      = macro_charts.get("ief_10y", pd.DataFrame())
+rsp_10y      = macro_charts.get("rsp_10y", pd.DataFrame())
+
+rsp_change_pct = None
+if not rsp_10y.empty:
+    rsp_close = rsp_10y['Close']
+    if len(rsp_close) >= 2:
+        rsp_change_pct = ((rsp_close.iloc[-1] - rsp_close.iloc[-2]) / rsp_close.iloc[-2]) * 100.0
+
+# 🆕 장단기 금리차 & 반도체 업황 데이터 추출
+tnx_10y   = macro_charts.get("tnx_10y", pd.DataFrame())
+irx_10y   = macro_charts.get("irx_10y", pd.DataFrame())
+mu_2y     = macro_charts.get("mu_2y", pd.DataFrame())
+soxx_2y   = macro_charts.get("soxx_2y", pd.DataFrame())
+
+us_score, us_verdict, us_details, us_phase = calculate_us_bottom_finder(spy_10y, vix_10y, cnn_score)
+kr_score, kr_verdict, kr_details, kr_phase = calculate_kr_bottom_finder(kospi_10y, vkospi_10y, usd_krw)
+kr_macro_score, kr_macro_status, kr_macro_details = calculate_macro_risk_gauge(kospi_10y, usd_krw)
+kr_risk_grade, kr_risk_color, kr_risk_alerts, kr_danger = calculate_kr_risk_radar(vkospi_10y, usd_krw, kospi_10y)
+
+# 미국 리스크 레이더 및 반등 신뢰도 글로벌 사전 계산 (1번 탭의 복사용 프롬프트 등에서 호출하기 위함)
+us_rec_verdict, us_rec_signals, us_rec_score = calculate_recovery_confirmation(rsp_10y, spy_10y, hyg_10y, ief_10y)
+us_risk_grade, us_risk_color, us_risk_alerts, us_danger = calculate_us_risk_radar(
+    vix_10y, vix3m_10y, hyg_10y, ief_10y, spy_10y,
+    tnx_hist=tnx_10y, irx_hist=irx_10y, mu_hist=mu_2y, soxx_hist=soxx_2y  # 🆕 장단기 금리차 & 반도체 업황
+)
 
 # 탭 구성
-tab1, tab2, tab4, tab3, tab_port, tab5, tab_risk = st.tabs([
-    "📊 실시간 포트폴리오",
-    "🌐 매크로 & F&G Index",
-    "🚀 오늘의 텐배거 레이더",
-    "🤖 AI 참모 리포트",
-    "💼 내 포트폴리오 장투 전략",
-    "📖 11원칙 매매 가이드라인",
-    "🚨 리스크 등급 가이드",
-])
+tab_sniper, tab_radar, tab_report, tab_port, tab_calendar = st.tabs(["🚦 ORION Signal", "🔍 종목 발굴 & 타이밍", "📊 마스터 리포트", "💼 포트폴리오", "📅 마켓 캘린더"])
 
-with tab1:
-    st.subheader("🔍 관심 종목 스캔")
+with tab_sniper:
+    st.subheader("🛰 ORION Signal")
+    st.caption("ORION은 기다릴 때와 움직일 때를 구별합니다.")
+
+    adv_head, adv_color, adv_actions = get_strategic_advice(
+        kr_danger, kr_score, kr_verdict, kr_phase, recovery_score=kr_macro_score
+    )
+
+    st.markdown(
+        f"<div style='background:{adv_color}22; border-left: 8px solid {adv_color}; "
+        f"padding:20px; border-radius:10px; margin-bottom:20px;'>"
+        f"<h2 style='margin-top:0; color:{adv_color};'>{adv_head}</h2>"
+        f"<p style='font-size:0.95em; color:#888; margin-bottom:10px;'>위험도 {kr_danger}점 · 바닥확률 {kr_score}% · 매크로안전도 {kr_macro_score}점 · {kr_phase}</p>"
+        f"<ul>" + "".join([f"<li style='font-size:1.05em; margin-bottom:5px;'>{a}</li>" for a in adv_actions]) + "</ul>"
+        f"</div>", unsafe_allow_html=True
+    )
+
+    st.divider()
+    st.markdown("### 💡 글로벌 매크로 & 수급 통합 지표")
+    
+    # 데이터 수집
+    flow_data = get_investor_flow()  # (외국인, 기관, 개인)
+    flow_1m = get_1m_investor_flow()
+    
+    # AI 브리핑을 위한 추가 데이터 구성
+    extra_data = {
+        'cnn_score': cnn_score,
+        'cnn_rating': cnn_rating,
+        'flow_1m': flow_1m,
+    }
+    
+    phase, summary_dict = analyze_macro_flow(macro_charts, flow_data, extra_data=extra_data)
+    
+    # 3x2 Grid 레이아웃 (매크로 3개, 수급 3개)
+    m_col1, m_col2, m_col3 = st.columns(3)
+    m_col1.metric("🇺🇸 국채 10년물 금리", summary_dict['TNX_10Y'].split(' (')[0], summary_dict['TNX_10Y'].split(' (')[1].replace(')','').replace('p',''), delta_color="inverse")
+    m_col2.metric("🛢️ WTI 원유", summary_dict['WTI_Crude'].split(' (')[0], summary_dict['WTI_Crude'].split(' (')[1].replace(')',''), delta_color="inverse")
+    m_col3.metric("💵 원/달러 환율", summary_dict['USD_KRW'].split(' (')[0], summary_dict['USD_KRW'].split(' (')[1].replace(')',''), delta_color="inverse")
+    
+    # 🇰🇷 코스피 실시간 가격 및 5일선 현황 표시
+    k_col1, k_col2, k_col3 = st.columns(3)
+    if not kospi_10y.empty:
+        current_kospi_val = round(float(kospi_10y['Close'].iloc[-1]), 2)
+        kospi_5d_sma = round(float(kospi_10y['Close'].rolling(5).mean().iloc[-1]), 2)
+        gap = current_kospi_val - kospi_5d_sma
+        is_above = current_kospi_val >= kospi_5d_sma
+        
+        # 코스피 등락률 연산
+        if len(kospi_10y['Close']) >= 2:
+            prev_kospi = float(kospi_10y['Close'].iloc[-2])
+            kospi_change_pts = current_kospi_val - prev_kospi
+            kospi_change_pct = (kospi_change_pts / prev_kospi) * 100.0
+            kospi_delta_str = f"{kospi_change_pct:+.2f}% ({kospi_change_pts:+.2f}p)"
+        else:
+            kospi_delta_str = "0.00% (0.00p)"
+        
+        k_col1.metric("🇰🇷 KOSPI 현재가", f"{current_kospi_val:,.2f}", delta=kospi_delta_str)
+        k_col2.metric("📈 KOSPI 5일 이평선", f"{kospi_5d_sma:,.2f}")
+        k_col3.metric(
+            "🎯 5일선 안착 여부", 
+            "안착 완료" if is_above else "미안착", 
+            f"이격: {gap:+,.2f}p", 
+            delta_color="normal" if is_above else "off"
+        )
+    else:
+        k_col1.metric("🇰🇷 KOSPI 현재가", "데이터 없음")
+        k_col2.metric("📈 KOSPI 5일 이평선", "데이터 없음")
+        k_col3.metric("🎯 5일선 안착 여부", "확인 불가")
+        
+    f_col1, f_col2, f_col3 = st.columns(3)
+    
+    if summary_dict.get('flow_valid', True):
+        def _get_metric_args(val):
+            return {
+                "label": "순매수" if val >= 0 else "순매도",
+                "delta": "순매수" if val >= 0 else "-순매도"
+            }
+            
+        f_col1.metric(f"👤 외국인 {_get_metric_args(summary_dict['Foreigner_raw'])['label']}", 
+                      summary_dict['Foreigner'], 
+                      _get_metric_args(summary_dict['Foreigner_raw'])['delta'])
+        
+        f_col2.metric(f"🏢 기관 {_get_metric_args(summary_dict['Institutional_raw'])['label']}", 
+                      summary_dict['Institutional'], 
+                      _get_metric_args(summary_dict['Institutional_raw'])['delta'])
+        
+        f_col3.metric(f"🧑 개인 {_get_metric_args(summary_dict['Retail_raw'])['label']}", 
+                      summary_dict['Retail'], 
+                      _get_metric_args(summary_dict['Retail_raw'])['delta'])
+    else:
+        # 데이터가 모두 0일 때 (KRX 시스템 점검 등)
+        f_col1.metric("👤 외국인 수급", "⚠️ 점검 중", "데이터 없음", delta_color="off")
+        f_col2.metric("🏢 기관 수급", "⚠️ 점검 중", "데이터 없음", delta_color="off")
+        f_col3.metric("🧑 개인 수급", "⚠️ 점검 중", "데이터 없음", delta_color="off")
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    if "cfo_report_cache" not in st.session_state:
+        st.session_state["cfo_report_cache"] = ""
+ 
+    if st.button("🔄 CFO AI 시장 브리핑 생성", key="cfo_report_btn"):
+        with st.spinner("거시경제 CFO AI가 시장 흐름을 분석하고 있습니다..."):
+            st.session_state["cfo_report_cache"] = generate_economic_commentary(summary_dict, phase)
+            
+    if st.session_state["cfo_report_cache"]:
+        ai_commentary = st.session_state["cfo_report_cache"]
+        if "⚠️" in ai_commentary:
+            st.error(ai_commentary)
+        else:
+            st.info(f"**[CFO 통합 브리핑] {phase}**\n\n{ai_commentary}")
+    else:
+        st.info("👈 버튼을 눌러 CFO AI 시장 분석 브리핑을 생성하세요.")
+
+    st.divider()
+    st.markdown("### 🤖 실시간 AI 종합 브리핑")
+    
+    if st.button("🔄 AI 종합 관제 리포트 생성 (뉴스 + 매크로 종합)", type="primary"):
+        with st.spinner("Gemini 2.5 Flash가 글로벌 속보와 매크로 수치를 종합하여 리포트를 작성 중입니다..."):
+            market_ctx = f"판정결과: {adv_head}\n위험도: {kr_danger}점\n바닥점수: {kr_score}점\n현재국면: {kr_phase}"
+            
+            try:
+                import sys
+                import importlib
+                import ai_reporter
+                importlib.reload(ai_reporter)
+                from ai_reporter import generate_smart_control_room_report
+                report = generate_smart_control_room_report(market_ctx)
+                st.session_state["ai_report_cache"] = report
+            except Exception as e:
+                st.error(f"리포트 생성 모듈 로드 실패: {e}")
+
+    if "ai_report_cache" in st.session_state:
+        st.markdown("<div class='ai-report-container'>", unsafe_allow_html=True)
+        st.markdown(st.session_state["ai_report_cache"])
+        st.markdown("</div>", unsafe_allow_html=True)
+    else:
+        st.info("👈 상단의 버튼을 눌러 최신 시황 리포트를 생성하세요.")
+
+    # API Key 캐싱 디버깅을 위한 마스킹 정보 출력
+    import os
+    api_key_check = os.environ.get("GEMINI_API_KEY", "")
+    if api_key_check:
+        masked_key = api_key_check[:6] + "..." + api_key_check[-4:] if len(api_key_check) > 10 else "길이 부족"
+        st.caption(f"⚙️ 현재 대시보드 서버가 인식한 API Key: `{masked_key}`")
+    else:
+        st.caption("⚙️ 현재 대시보드 서버가 인식한 API Key: `[없음]`")
+
+    st.divider()
+
+    st.markdown("### 📰 최근 글로벌 주요 뉴스 (AI 수집)")
+    import os, json, requests
+    
+    news_data = []
+    remote_url = "https://raw.githubusercontent.com/rentgist/quant-alpha-engine/main/data/news_archive.json"
+    try:
+        resp = requests.get(remote_url, timeout=5)
+        if resp.status_code == 200:
+            news_data = resp.json()
+    except:
+        pass
+        
+    if not news_data:
+        news_file = os.path.join("..", "quant-alpha-engine", "data", "news_archive.json")
+        if not os.path.exists(news_file):
+            news_file = "data/news_archive.json"
+        if os.path.exists(news_file):
+            try:
+                with open(news_file, "r", encoding="utf-8") as f:
+                    news_data = json.load(f)
+            except:
+                pass
+                
+    if True:
+        try:
+            if news_data:
+                import datetime
+                recent_news = []
+                now = datetime.datetime.now()
+                for n in news_data:
+                    dt_str = n.get("fetched_at", "")
+                    try:
+                        # Only include news within the last 3 days (72 hours)
+                        dt = datetime.datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+                        if (now - dt).days <= 3:
+                            recent_news.append(n)
+                    except:
+                        # If date parsing fails, just include it to be safe
+                        recent_news.append(n)
+                
+                news_data = sorted(recent_news, key=lambda x: (x.get("importance", 0), x.get("fetched_at", "")), reverse=True)
+                for n in news_data[:20]:
+                    title = n.get("title_ko", n.get("title", ""))
+                    link = n.get("link", "#")
+                    source = n.get("source", "N/A")
+                    importance = n.get("importance", 0)
+                    sentiment = n.get("sentiment", "중립")
+                    
+                    stars = "⭐" * importance
+                    color = "red" if sentiment == "악재" else "green" if sentiment == "호재" else "gray"
+                    
+                    with st.expander(f"[{source}] {title} (중요도: {stars})"):
+                        st.markdown(f"**판단 근거**: {n.get('reason', '')}")
+                        st.markdown(f"**대응 액션**: <span style='color:{color}; font-weight:bold;'>{n.get('action_point', '')}</span>", unsafe_allow_html=True)
+                        st.markdown(f"[원문 기사 보러가기]({link})")
+            else:
+                st.write("수집된 뉴스가 없습니다.")
+        except Exception as e:
+            st.error(f"뉴스 로드 중 오류: {e}")
+    else:
+        st.write("현재 수집된 뉴스 아카이브가 존재하지 않습니다.")
+
+    st.divider()
+
+    # ── [NEW] ORION 매크로 & 자금흐름 통합 국면 판별기 ──
+    st.divider()
+    st.markdown("### 🚦 ORION 통합 국면 판별기 (Regime Classifier)")
+    
+    c_macro, c_flow = st.columns(2)
+    
+    with c_macro:
+        st.markdown("#### Step 1: 📊 매크로 위험도 (Risk Gauge)")
+        st.markdown(f"**상태:** {kr_macro_status}")
+        for icon, msg in kr_macro_details:
+            st.write(f"{icon} {msg}")
+            
+    with c_flow:
+        st.markdown("#### Step 2: 💸 자금흐름 강도 (Flow Signal)")
+        
+        # 수동 입력 폼
+        f_col1, f_col2 = st.columns(2)
+        with f_col1:
+            foreign_futures = st.number_input("① 외국인 선물 순매수 (계약)", value=0, step=100)
+        with f_col2:
+            oi_trend = st.radio("② 선물 미결제약정", ["증가 추세", "감소/정체"], index=1)
+            
+        kr_flow_score, kr_flow_status, kr_flow_details = calculate_cashflow_signal(foreign_futures, oi_trend, rsp_change_pct, kospi_10y)
+        
+        st.markdown(f"**상태:** {kr_flow_status}")
+        for icon, msg in kr_flow_details:
+            st.write(f"{icon} {msg}")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("#### Step 3: 🎯 통합 판정 (Action Plan)")
+    
+    regime, action, r_color = calculate_regime_classification(kr_macro_score, kr_flow_score)
+    
+    st.markdown(
+        f"<div style='background:{r_color}22; border-left: 8px solid {r_color}; padding:20px; border-radius:10px; margin-bottom:20px;'>"
+        f"<h2 style='margin-top:0; color:{r_color};'>{regime}</h2>"
+        f"<p style='font-size:1.1em; color:#333;'>{action}</p>"
+        f"</div>", unsafe_allow_html=True
+    )
+    
+    st.caption("※ 자금흐름(단기 수급) 50점 이상 시 선발대 투입 검토 가능 (⚠️ 경고 국면)")
+    
+    st.markdown("""
+    <div style='background-color:#f8f9fa; padding:15px; border-radius:8px; border:1px solid #ddd; margin-bottom:25px;'>
+        <h4 style='margin-top:0; color:#444;'>💡 대가들의 비중 조절 규칙 (Position Sizing)</h4>
+        <ul style='font-size:0.95em; color:#555;'>
+            <li><b>선발대(정찰병)만 투입 (현금의 10% ~ 20%)</b> : 아직 매크로 추세가 완전히 돌아서지 않았으므로 '본대' 투입은 금물입니다. 내일 5일선이 깨지면 가장 적은 손실로 빠르게 즉각 손절(Cut)할 수 있는 비중만 진입합니다.</li>
+            <li><b>관찰 기간 (3~5일) 유지</b> : 이 수급이 '하루짜리 훼이크'인지, '진짜 추세 전환'인지 3~5일간 5일선 지지 여부를 확인해야 합니다 (위 통합 판정에 <b>실제 경과일이 자동 카운트</b>됩니다).</li>
+            <li><b>본대 투입 타이밍 (조건부 GO → 강력 GO)</b> : 3~5일 뒤 KOSPI 20일선까지 돌파하며 매크로 점수도 50점 이상으로 올라오면(🟡 조건부 GO), 그때 남은 현금의 50%를 투입합니다. 모든 지표가 80점 이상을 가리키면(🟢 강력 GO) 풀매수를 진행합니다.</li>
+        </ul>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # ──────────────────────────────────────────────────────────
+    # [웹 Gemini 복사용 프롬프트 생성기]
+    # ──────────────────────────────────────────────────────────
+    st.divider()
+    st.markdown("### 📋 웹 버전 Gemini Pro 복사용 프롬프트")
+    st.caption("아래 텍스트 상자의 복사 버튼(우측 상단 아이콘)을 눌러 구글 웹 Gemini(Advanced 등)에 붙여넣으면, 최고 스펙 Pro 모델의 깊이 있는 마켓 브리핑을 무료로 받으실 수 있습니다!")
+    
+    # 최근 뉴스 포맷팅 (최대 60개)
+    web_news_lines = []
+    if news_data:
+        for n in news_data[:60]:
+            t = n.get("title_ko", n.get("title", ""))
+            s = n.get("sentiment", "중립")
+            i = n.get("importance", 0)
+            a = n.get("action_point", "")
+            web_news_lines.append(f"- [{s}/중요도:{i}] {t} (대응: {a})")
+    web_news_text = "\n".join(web_news_lines) if web_news_lines else "최근 수집된 뉴스가 없습니다."
+
+    # 프롬프트 조립용 지표 포맷팅
+    kospi_str = f"{current_kospi_val:,.2f}" if 'current_kospi_val' in locals() and current_kospi_val else "N/A"
+    kospi_5d_str = f"{kospi_5d_sma:,.2f}" if 'kospi_5d_sma' in locals() and kospi_5d_sma else "N/A"
+    kospi_status_str = ("안착 완료" if is_above else f"미안착 (이격: {gap:+,.2f}p)") if 'is_above' in locals() and 'gap' in locals() else "N/A"
+    
+    
+    rsp_val_str = f"{rsp_change_pct:+.2f}%" if rsp_change_pct is not None else "N/A"
+
+    # 프롬프트 조립
+    upcoming_events_str = calendar_manager.get_upcoming_events_string()
+    web_prompt = f"""너는 대한민국 상위 1% 자산가를 위한 월스트리트 최고 수준의 매크로 애널리스트이자 11원칙 장기 투자(Value Accumulation)의 대가다.
+다음 주어진 '알고리즘 시스템의 현재 판독 결과', '시장 거시 지표', '최근 글로벌 뉴스'를 바탕으로, 매우 전문적이고 깊이 있는 투자 분석 리포트를 작성하라.
+
+[알고리즘 판정 결과]
+- 국면 판정: {adv_head}
+- 위험도 점수: 한국 {kr_danger}점 / 미국 {us_danger}점
+- 바닥 점수: 한국 {kr_score}% / 미국 {us_score}%
+- 현재 국면: 한국 {kr_phase} / 미국 {us_phase}
+- 매크로 점수: 한국 {kr_macro_score}점
+- 자금흐름 점수: 한국 {kr_flow_score}점
+- 통합 국면: {regime}
+
+[시장 거시 지표 및 수급]
+- TNX 10Y 금리: {summary_dict.get('TNX_10Y', 'N/A') if 'summary_dict' in locals() else 'N/A'}
+- WTI 크루드 유가: {summary_dict.get('WTI_Crude', 'N/A') if 'summary_dict' in locals() else 'N/A'}
+- USD/KRW 환율: {summary_dict.get('USD_KRW', 'N/A') if 'summary_dict' in locals() else 'N/A'}
+- 외국인 순매수: {summary_dict.get('Foreigner', 'N/A') if 'summary_dict' in locals() else 'N/A'}
+- 기관 순매수: {summary_dict.get('Institutional', 'N/A') if 'summary_dict' in locals() else 'N/A'}
+- 개인 순매수: {summary_dict.get('Retail', 'N/A') if 'summary_dict' in locals() else 'N/A'}
+- KOSPI 현재가: {kospi_str}
+- KOSPI 5일 이평선: {kospi_5d_str}
+- KOSPI 5일선 안착 상태: {kospi_status_str}
+- 미국 RSP 전일 등락률: {rsp_val_str}
+
+[최근 글로벌 속보 요약 (중요도 2 이상)]
+{web_news_text}
+
+{upcoming_events_str}
+
+---
+위 데이터를 기반으로 다음 3가지 핵심 뼈대로 리포트를 매우 분석적이고 통찰력있게 작성하십시오.
+1. **현재 시장 국면 요약 (Market Summary)**: 현재 하락세의 원인, 매크로 수급과 외인 이탈 여부를 종합 진단하십시오.
+2. **글로벌 거시 리스크 및 섹터 전망 (Macro & Sector Outlook)**: 
+   - 금리/유가/지정학 리스크가 주요 자산에 미칠 영향을 상세히 서술하십시오.
+   - [미장 승률 극대화 지침] 안정적으로 우상향하는 미국 시장의 특성과 예정된 빅테크 실적/가이던스를 결합하여, 향후 환율 하락 시 가장 승률과 수익률을 극대화할 수 있는 안전한 진입 시나리오를 구체적으로 제시하십시오.
+3. **최종 행동 지침 (CFO Action Plan)**:보유 중인 우량주 홀딩 여부, 레버리지 관리, 현금 50% 분할 매수 집행 타이밍을 매우 구체적으로 지시하십시오. 예정된 주요 일정을 참고하여 매매 일정을 조율하십시오.
+"""
+    st.code(web_prompt, language="markdown")
+
+
+with tab_radar:
+    st.subheader("🔍 타점 선택 (Entry Point Selection) - 포트폴리오 종목 타점")
+    st.caption("스나이퍼 탭에서 'GO' 신호가 떨어졌을 때, 어떤 종목을 살지 재무 및 수급을 점검하는 레이더입니다.")
+    
+    st.markdown("""
+    <div style='background-color:#e8f4f8; padding:15px; border-radius:8px; border-left: 6px solid #17a2b8; margin-bottom:20px;'>
+        <h4 style='margin-top:0; color:#0c5460;'>📈 상승장(강력 GO) 대응 가이드: 눌림목 매수</h4>
+        <p style='font-size:0.95em; color:#1b4b52; margin-bottom:0;'>
+        매크로가 <b>대세 상승장(강력 GO)</b>일 때는 무지성 시장가 매수가 아닌, 아래 레이더에서 <b>'💡 타점' (20일선 부근 GTC 또는 볼린저 하단)</b> 가격을 확인하고,<br>
+        해당 가격에 <b>GTC(취소 전까지 유효) 지정가 매수 주문</b>을 걸어두는 것이 가장 승률이 높습니다.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+    
     c1, c2 = st.columns(2)
     us_input = c1.text_input("🇺🇸 미국 주식", "TSMC, 브로드컴, 버티브")
     kr_input = c2.text_input("🇰🇷 한국 주식", "LS ELECTRIC")
@@ -149,7 +550,7 @@ with tab1:
                 d = future.result()
                 d["Region"] = region
                 if not d.get("error"): all_data.append(d)
-                else: failed_queries.append(q)
+                else: failed_queries.append(f"{q} ({d.get('error')})")
         prog.empty()
     elif not st.session_state.get("scan_requested"):
         st.info("종목을 입력하고 **스캔 시작** 버튼을 누르면 분석이 시작됩니다.")
@@ -290,8 +691,8 @@ with tab1:
             interpretation = get_cashflow_interpretation(d)
             st.info(f"**{d['Name']}** : {interpretation}")
 
-with tab2:
-    st.subheader("🌐 글로벌 매크로 및 시장 심리")
+with tab_report:
+    st.subheader("🌐 글로벌 매크로 및 시장 심리 (진바닥 & 반등 신뢰도 점수)")
 
     vix_10y = macro_charts.get("vix_10y", pd.DataFrame())
     vix3m_10y = macro_charts.get("vix3m_10y", pd.DataFrame())
@@ -370,8 +771,11 @@ with tab2:
 
     # ── 레이어 1: 위험 탐지기 (미국 마스터 / 한국 보조) ──
     st.markdown("##### 🚨 글로벌 매크로 & 로컬 수급 위험 탐지기")
-    us_risk_grade, us_risk_color, us_risk_alerts, us_danger = calculate_us_risk_radar(vix_10y, vix3m_10y, hyg_10y, ief_10y, spy_10y)
-    kr_risk_grade, kr_risk_color, kr_risk_alerts, kr_danger = calculate_kr_risk_radar(vkospi_10y, usd_krw, kospi_10y)
+    us_risk_grade, us_risk_color, us_risk_alerts, us_danger = calculate_us_risk_radar(
+        vix_10y, vix3m_10y, hyg_10y, ief_10y, spy_10y,
+        tnx_hist=tnx_10y, irx_hist=irx_10y, mu_hist=mu_2y, soxx_hist=soxx_2y
+    )
+#     kr_risk_grade, kr_risk_color, kr_risk_alerts, kr_danger = calculate_kr_risk_radar(vkospi_10y, usd_krw, kospi_10y)
 
     st.markdown(f"<div style='background:{us_risk_color}22; border-left: 6px solid {us_risk_color}; padding:15px; border-radius:8px; font-weight:bold; font-size:1.1em; margin-bottom:10px;'>🇺🇸 [글로벌 마스터] {us_risk_grade}</div>", unsafe_allow_html=True)
     for icon, msg in us_risk_alerts:
@@ -401,8 +805,8 @@ with tab2:
     # ── 레이어 2: 바닥 탐지기 ──
     st.markdown("##### 📉 레이어 2: 바닥 탐지기 (이 하락이 바닥인가?)")
     
-    us_score, us_verdict, us_details, us_phase = calculate_us_bottom_finder(spy_10y, vix_10y, cnn_score)
-    kr_score, kr_verdict, kr_details, kr_phase = calculate_kr_bottom_finder(kospi_10y, vkospi_10y, usd_krw)
+#     us_score, us_verdict, us_details, us_phase = calculate_us_bottom_finder(spy_10y, vix_10y, cnn_score)
+#     kr_score, kr_verdict, kr_details, kr_phase = calculate_kr_bottom_finder(kospi_10y, vkospi_10y, usd_krw)
     
     us_color = "#21c354" if us_score >= 70 else "#fcca46" if us_score >= 50 else "#aaaaaa"
     kr_color = "#21c354" if kr_score >= 70 else "#fcca46" if kr_score >= 50 else "#aaaaaa"
@@ -449,12 +853,10 @@ with tab2:
             st.markdown(f"- {icon} {msg}")
 
     with r_col2:
-        st.markdown(f"**🇰🇷 한국 반등 신뢰도**")
-        kr_rec_verdict, kr_rec_signals, kr_rec_score = calculate_kr_recovery_confirmation(
-            kospi_10y, usd_krw
-        )
-        st.markdown(f"**{kr_rec_verdict}**")
-        for icon, msg in kr_rec_signals:
+        st.markdown(f"**🇰🇷 한국 매크로 안전도**")
+        # tab_sniper에서 계산한 kr_macro_score 등 재활용
+        st.markdown(f"**{kr_macro_status}**")
+        for icon, msg in kr_macro_details:
             st.markdown(f"- {icon} {msg}")
 
     st.divider()
@@ -470,7 +872,7 @@ with tab2:
         us_danger, us_score, us_verdict, us_phase, recovery_score=us_rec_score
     )
     kr_adv_head, kr_adv_color, kr_adv_actions = get_strategic_advice(
-        kr_danger, kr_score, kr_verdict, kr_phase, recovery_score=kr_rec_score
+        kr_danger, kr_score, kr_verdict, kr_phase, recovery_score=kr_macro_score
     )
 
     adv_col1, adv_col2 = st.columns(2)
@@ -490,107 +892,22 @@ with tab2:
             f"padding:15px; border-radius:8px; font-weight:bold; font-size:1.05em; margin-bottom:10px;'>"
             f"🇰🇷 {kr_adv_head}</div>", unsafe_allow_html=True
         )
-        st.caption(f"판단 근거: 위험 {kr_danger}점 · 바닥 {kr_score}% · 반등 신뢰도 {kr_rec_score} · {kr_phase}")
+        st.caption(f"판단 근거: 위험 {kr_danger}점 · 바닥 {kr_score}% · 매크로 안전도 {kr_macro_score} · {kr_phase}")
         for act in kr_adv_actions:
             st.markdown(f"- {act}")
 
     st.divider()
 
-    # ── 🚦 v24.0 핵심: 실시간 Tier 판정 배너 ──────────────────────
-    st.markdown("##### 🚦 v24.0 실시간 Tier 판정 — \"지금 어떤 무기를 꺼내야 하는가?\"")
-
-    def _compute_tier(score, rec_score, danger):
-        """
-        v24.0 Tier 판정 로직.
-        반환: (tier_label, action_badge, action_color, border_color, body_lines)
-        - body_lines: 흰색 텍스트로 표시할 조건 항목 리스트
-        """
-        if score >= 80:
-            # Tier 3: 극단 패닉 — 반등 신뢰도 체크 완전 무효화 (설계 의도)
-            body = [
-                f"📊 바닥 점수: <b>{score}점</b> (기준 ≥ 80점) ✅",
-                "⚡ <b>반등 신뢰도 체크: 이 Tier에서 면제</b> — 기술적 지표가 무너진 구간이므로 반등 신호를 기다리면 도매가를 놓침",
-                "🎯 FCF Yield ✅ &amp; PEG ≤ 1.5인 1등 우량주 확인 후 <b>오후 3시에 예산의 10% 선투입</b>",
-                "⏰ 오전 갭상승 속임수 주의 — 집행은 반드시 오후 3시",
-            ]
-            return ("🔥 Tier 3", "극단 패닉", "✅ 선투입 가능", "#00d4aa", "#e94560", body)
-
-        elif score >= 50:
-            gates_ok = rec_score >= 2
-            body = [
-                f"📊 바닥 점수: <b>{score}점</b> (기준 ≥ 50점) ✅",
-                f"📡 반등 신뢰도: <b>{rec_score}점</b> {'✅ 충족 (기준 ≥ 2점)' if gates_ok else '❌ 미충족 (기준 ≥ 2점 필요)'}",
-            ]
-            if gates_ok:
-                body += [
-                    "🎯 게이트키퍼 2~3개 이상 추가 확인 (5일선 돌파 / 환율 안정 / 기관 수급)",
-                    "<b>오후 3시에 남은 예산의 10% 불타기(Pyramiding)</b>",
-                ]
-                return ("🟡 Tier 2", "추세 전환", "✅ 불타기 가능", "#00d4aa", "#fcca46", body)
-            else:
-                body += [
-                    "⏸ 게이트키퍼 미충족 — 수급·5일선·환율 중 2개 이상 충족 시 진입 허가",
-                    "<b>현재: 현금 무한 대기. 조건 충족 날 오후 3시 진입.</b>",
-                ]
-                return ("🟡 Tier 2 대기", "회복 확인 중", "⏸ 현금 대기", "#fcca46", "#fcca46", body)
-
-        else:
-            if danger <= 1:
-                body = [
-                    f"📊 바닥 점수: <b>{score}점</b> — 패닉 없는 안정 구간",
-                    "🎯 MSFT·GOOGL 등 빅테크가 <b>RSI ≤ 40</b> 또는 <b>볼린저 밴드 하단</b> 터치 시",
-                    "<b>GTC 예약 주문으로 코어 자산 기계 분할매수</b>",
-                ]
-                return ("🟢 Tier 1", "일상 적립", "✅ GTC 적립 가능", "#00d4aa", "#21c354", body)
-            else:
-                body = [
-                    f"📊 바닥 점수: <b>{score}점</b> — 아직 바닥 미형성",
-                    f"⚠️ 위험 경보 <b>{danger}점</b> 발동",
-                    "<b>현금 비중 최대 유지. 바닥 점수 50점 돌파 시까지 전면 대기.</b>",
-                ]
-                return ("🟠 위험 대기", "경보 발동", "⛔ 전면 대기", "#e94560", "#ff7c21", body)
-
-    def _render_tier_card(flag, score, rec_score, danger):
-        label, sub, action_badge, action_color, border_color, body = _compute_tier(score, rec_score, danger)
-        body_html = "".join(f"<div style='margin:4px 0; font-size:0.88em; color:#fff;'>· {line}</div>" for line in body)
-        st.markdown(
-            f"<div style='background:{border_color}18; border-left:5px solid {border_color}; "
-            f"padding:14px 16px; border-radius:8px; margin-bottom:6px;'>"
-            f"<div style='font-size:1.3em; font-weight:900; color:#fff;'>{flag} {label}</div>"
-            f"<div style='font-size:0.9em; font-weight:700; color:{border_color}; margin:3px 0 8px;'>{sub}</div>"
-            f"<div style='display:inline-block; padding:3px 10px; border-radius:12px; "
-            f"background:{action_color}30; border:1px solid {action_color}; "
-            f"color:{action_color}; font-weight:700; font-size:0.88em; margin-bottom:8px;'>{action_badge}</div>"
-            f"{body_html}"
-            f"</div>",
-            unsafe_allow_html=True
-        )
-
-    tier_col1, tier_col2 = st.columns(2)
-    with tier_col1:
-        _render_tier_card("🇺🇸", us_score, us_rec_score, us_danger)
-    with tier_col2:
-        _render_tier_card("🇰🇷", kr_score, kr_rec_score, kr_danger)
-
-    # ── False Signal 차단기: 각 시장별로 독립 판정, Tier 3 시장은 제외 ──
-    us_is_tier3 = us_score >= 80
-    kr_is_tier3 = kr_score >= 80
-    alerts = []
-    if not us_is_tier3:
-        if us_rec_score == 0 and us_score >= 50:
-            alerts.append("🇺🇸 **[미국] 반등 신뢰도 0** — Tier 2 조건 미충족. 오늘 미국 추가 매수 보류.")
-        if us_score < 50 and us_danger >= 3:
-            alerts.append("🇺🇸 **[미국] 위험 경보 + 바닥 미달** — 낙폭 과대 착시 경계. 미국 매수 전면 금지.")
-    if not kr_is_tier3:
-        if kr_rec_score == 0 and kr_score >= 50:
-            alerts.append("🇰🇷 **[한국] 반등 신뢰도 0** — Tier 2 조건 미충족. 오늘 한국 추가 매수 보류.")
-        if kr_score < 50 and kr_danger >= 3:
-            alerts.append("🇰🇷 **[한국] 위험 경보 + 바닥 미달** — 낙폭 과대 착시 경계. 한국 매수 전면 금지.")
-    if alerts:
-        st.warning("**⛔ False Signal 차단기** (해당 시장 Tier 3 제외, 각 시장별 독립 판정)\n\n" + "\n\n".join(alerts))
+    # False Signal 경보 — 매수 금지 조건 실시간 체크
+    false_signals = []
+    if us_rec_score == 0 and us_score < 70:
+        false_signals.append("🚫 **반등 신뢰도 0** — 오늘의 급등은 쇼트커버링 가능성. 수급 없는 가짜 반등 경계")
+    if us_score < 50 and us_danger >= 3:
+        false_signals.append("🚫 **위험 경보 + 바닥 점수 미달** — 낙폭 과대라는 착시 주의. 오늘 매수 보류 권장")
+    if false_signals:
+        st.warning("\n".join(["**⛔ False Signal 차단기 발동 (매수 보류 권장)**"] + false_signals))
 
     st.divider()
-
 
     # ── 백테스트 (10년 데이터 기반 완화 컷) ──
     with st.expander("🔬 과거 10년 백테스트 (바닥 탐지기 기준)"):
@@ -810,64 +1127,9 @@ with tab2:
         st.warning("⚠️ CNN 서버 차단 중. 잠시 후 새로고침 해주세요.")
         
     st.divider()
-    st.subheader("💡 글로벌 매크로 & 수급 통합 AI 브리핑")
-    
-    # 데이터 수집
-    flow_data = get_investor_flow()  # (외국인, 기관, 개인)
-    flow_1m = get_1m_investor_flow()
-    
-    # AI 브리핑을 위한 추가 데이터 구성
-    extra_data = {
-        'cnn_score': cnn_score,
-        'cnn_rating': cnn_rating,
-        'flow_1m': flow_1m,
-    }
-    
-    phase, summary_dict = analyze_macro_flow(macro_charts, flow_data, extra_data=extra_data)
-    
-    # 3x2 Grid 레이아웃 (매크로 3개, 수급 3개)
-    m_col1, m_col2, m_col3 = st.columns(3)
-    m_col1.metric("🇺🇸 국채 10년물 금리", summary_dict['TNX_10Y'].split(' (')[0], summary_dict['TNX_10Y'].split(' (')[1].replace(')','').replace('p',''), delta_color="inverse")
-    m_col2.metric("🛢️ WTI 원유", summary_dict['WTI_Crude'].split(' (')[0], summary_dict['WTI_Crude'].split(' (')[1].replace(')',''), delta_color="inverse")
-    m_col3.metric("💵 원/달러 환율", summary_dict['USD_KRW'].split(' (')[0], summary_dict['USD_KRW'].split(' (')[1].replace(')',''), delta_color="inverse")
-    
-    f_col1, f_col2, f_col3 = st.columns(3)
-    
-    if summary_dict.get('flow_valid', True):
-        def _get_metric_args(val):
-            return {
-                "label": "순매수" if val >= 0 else "순매도",
-                "delta": "순매수" if val >= 0 else "-순매도"
-            }
-            
-        f_col1.metric(f"👤 외국인 {_get_metric_args(summary_dict['Foreigner_raw'])['label']}", 
-                      summary_dict['Foreigner'], 
-                      _get_metric_args(summary_dict['Foreigner_raw'])['delta'])
-        
-        f_col2.metric(f"🏢 기관 {_get_metric_args(summary_dict['Institutional_raw'])['label']}", 
-                      summary_dict['Institutional'], 
-                      _get_metric_args(summary_dict['Institutional_raw'])['delta'])
-        
-        f_col3.metric(f"🧑 개인 {_get_metric_args(summary_dict['Retail_raw'])['label']}", 
-                      summary_dict['Retail'], 
-                      _get_metric_args(summary_dict['Retail_raw'])['delta'])
-    else:
-        # 데이터가 모두 0일 때 (KRX 시스템 점검 등)
-        f_col1.metric("👤 외국인 수급", "⚠️ 점검 중", "데이터 없음", delta_color="off")
-        f_col2.metric("🏢 기관 수급", "⚠️ 점검 중", "데이터 없음", delta_color="off")
-        f_col3.metric("🧑 개인 수급", "⚠️ 점검 중", "데이터 없음", delta_color="off")
-    
-    st.markdown("<br>", unsafe_allow_html=True)
-    
-    with st.spinner("거시경제 CFO AI가 시장 흐름을 분석하고 있습니다..."):
-        ai_commentary = generate_economic_commentary(summary_dict, phase)
-        
-    if "⚠️" in ai_commentary:
-        st.error(ai_commentary)
-    else:
-        st.info(f"**[CFO 통합 브리핑] {phase}**\n\n{ai_commentary}")
+    st.info("💡 본 탭 하단에 위치했던 [글로벌 매크로 & 수급 통합 AI 브리핑] 지표들과 CFO 브리핑 생성 버튼은 사용자님의 편의를 위해 **1번 탭 (🎯 AI 스마트 관제실)**으로 통합 이전되었습니다. 이제 1번 탭에서 모든 브리핑과 지표를 일괄적으로 확인 및 컨트롤하실 수 있습니다!")
 
-with tab4:
+with tab_radar:  # 🚀 오늘의 텐배거 레이더
     st.subheader("🚀 섹터별 텐배거 마스터 레이더 (미래 지표 및 트렌드 필터)")
     UNIVERSE = {
         "🇺🇸 미국 AI & 클라우드":              ["PLTR","CRWD","SNOW","DDOG","NET","SOUN","MDB","ZS","MNDY"],
@@ -945,7 +1207,7 @@ with tab4:
             else:
                 st.warning("⚠️ 현재 조건(지하실 역추세 및 실적/마진 기준)을 통과한 진성 우량주가 이 섹터에 존재하지 않습니다.")
 
-with tab3:
+with tab_report:  # 🤖 AI 참모 리포트
     st.subheader("🤖 AI 참모 전용 구조화 리포트 v23.0 (진바닥 판독기 연동)")
     st.caption("아래 텍스트를 복사하여 ChatGPT, Claude, Gemini 등에 붙여넣고 심층 분석을 받아보세요.")
 
@@ -961,7 +1223,7 @@ with tab3:
         "【시장 국면 & 시스템 전략 제언】",
         f"- 🇺🇸 미국: {us_phase} | 위험 탐지 {us_danger}점 | 진바닥 확률 {us_score}% | 반등 신뢰도 {us_rec_score}/100",
         f"  → 시스템 제언: {us_adv_head}",
-        f"- 🇰🇷 한국: {kr_phase} | 위험 탐지 {kr_danger}점 | 진바닥 확률 {kr_score}% | 반등 신뢰도 {kr_rec_score}/100",
+        f"- 🇰🇷 한국: {kr_phase} | 위험 탐지 {kr_danger}점 | 진바닥 확률 {kr_score}% | 매크로 안전도 {kr_macro_score}/100",
         f"  → 시스템 제언: {kr_adv_head}",
         "",
         "【스캔 종목 데이터】"
@@ -1019,7 +1281,6 @@ with tab3:
         "4. [기술적 타점 분석 및 최종 매매 시나리오]",
         "   - RSI 멀티타임프레임과 52주 위치, 시장대비 강도를 종합해 현재 가장 매수 신뢰도가 높은 종목을 선정해 줘.",
         "   - '위험 점수'와 '진바닥 확률', '반등 신뢰도' 등 매크로 지표를 고려해 포트폴리오 비중(예: ETF 절반 + 개별 우량주 절반) 배분 전략을 제시해 줘.",
-        "   - 내가 이 질문 뒤에 이어서 '오늘의 주요 뉴스나 호재/악재'를 알려주면, 그 뉴스를 반영하여 각 종목의 [가장 안전한 1·2·3차 진입 타점과 비중]을 정확한 수치로 찍어 줘.",
         "   - 현재 시장 심리(F&G, SPY RSI)를 바탕으로 지금 당장 '적극 매수', '관망', '비중 축소' 해야 할 종목들을 분류하고 구체적인 액션 플랜을 제시해 줘."
     ]
     st.code("\n".join(lines), language="text")
@@ -1313,103 +1574,7 @@ with tab_port:
 
                 st.code("\n".join(port_lines), language="text")
 
-with tab5:
-    st.header("📖 11원칙 퀀트 매매 마스터 매뉴얼 v24.0")
-    st.caption("v24.0: 매크로 게이트키퍼 Tier 시스템 — '칼자루는 진바닥으로 잡고, 방아쇠는 수급으로 당긴다'")
-
-    st.markdown("""
-## 🏛️ I. 투자 철학
-
-> **"가장 쌀 때(진바닥 90%) 10%의 용기를 내고, 어설프게 반등할 때(반등 신뢰도 0) 90%의 현금을 인내한다."**
-
-우리의 시스템은 시장의 공포 단계에 따라 진입의 '잣대'를 유연하게 바꿉니다. 10년에 한 번 오는 완벽한 타점만 기다리지 않으며, 동시에 매일 찾아오는 가짜 반등의 유혹에도 속지 않습니다.
-
----
-
-## 📊 II. 실전 진입 3단계 (Tier System)
-
-### 🔥 Tier 3 — 극단적 패닉장 (1차 선발대 투입)
-
-| 항목 | 기준 |
-|------|------|
-| **발동 조건** | 진바닥 탐지 점수 ≥ 80점 (극단 패닉) |
-| **특징** | 5일선·수급·매크로 지표가 전부 박살. 기다리면 도매가를 놓침 |
-| **액션** | 오직 재무 퀄리티(FCF Yield ✅, PEG ≤ 1.5)가 검증된 1등 우량주에 **스나이퍼 예산의 10%** 1차 선투입 |
-| **집행 시각** | 오후 3시 (장 막판 종가 부근) — 오전 갭상승 속임수 회피 |
-
-> 예: 삼성전자·MSFT 등 FCF·PEG 1등 우량주. 기술적 지표가 다 망가져 있어도 투입 가능.
-
----
-
-### 🟡 Tier 2 — 추세 전환기·중급 하락장 (2/3차 불타기)
-
-**발동 조건:** Tier 3 1차 투입 후, 시장이 바닥을 다지고 이륙 준비를 할 때.
-
-**게이트키퍼 4원칙 (최소 2~3개 충족 필요)**
-
-| # | 조건 | 확인 방법 |
-|---|------|-----------|
-| 1 | **반등 신뢰도** | 본 대시보드 반등 신뢰도 스코어 ≥ 2점 |
-| 2 | **추세 (5일선)** | 일봉상 주가가 5일 이동평균선 위로 안착 |
-| 3 | **매크로** | 원/달러 환율 상승 멈춤(횡보 또는 하락) + 야간 선물 안정 |
-| 4 | **수급** | 기관·외국인 순매수 유입 + 평균 대비 거래량 증가 |
-
-**액션:** 위 4가지 중 2~3가지 동시 충족 확인 시 → **오후 3시**에 남은 예산의 **10% 불타기(Pyramiding)**
-(조건 미충족 = 현금 무한 대기)
-
----
-
-### 🟢 Tier 1 — 일상 상승·횡보장 (코어 자산 GTC 적립)
-
-| 항목 | 기준 |
-|------|------|
-| **발동 조건** | 시장에 큰 패닉 없는 평온 상태 (진바닥 점수 < 50) |
-| **특징** | 진바닥 확률은 낮지만, 코어 자산 적립 기회 |
-| **액션** | MSFT·GOOGL 등 미국 빅테크가 **RSI ≤ 40** 또는 **볼린저 밴드 하단** 터치 시 GTC 예약 주문으로 기계 분할매수 |
-
----
-
-## 🚫 III. 절대 매수 금지 — False Signal 차단기
-
-> 피 같은 현금을 갉아먹는 '가짜 반등(Bull Trap)'을 차단하는 3개의 필터. 하나라도 해당하면 그날 **무조건 매수 보류 + HTS 종료.**
-
-| 차단 조건 | 설명 |
-|-----------|------|
-| ⛔ **오전의 속임수** | 9~11시 갭상승 후 오후에 장중 고점을 깨고 흘러내릴 때. 매수는 항상 오후 3시에만 결정. |
-| ⛔ **가짜 거품주** | 반토막이 나도 PEG ≥ 1.5 이거나 FCF Yield 마이너스인 종목. 낙폭과대 착시 경계. |
-| ⛔ **엔진 꺼짐** | 지수가 3~4% 급등해도 반등 신뢰도 = 0이면 투입 금지. 쇼트커버링일 뿐 진짜 자금이 아님. |
-
----
-
-## 📋 IV. 오리지널 11원칙 (변경 없음)
-
-**[ 펀더멘탈: 실적과 턴어라운드 ]**
-- **1원칙 (3개년 우상향):** 매출 & 영업이익 지속 상승.
-- **2원칙 (시가총액 비교):** 시장·섹터 대비 시총 규모가 적정하게 낮을 것.
-- **3원칙 (턴어라운드 기대):** 현재 마진이 낮아도 미래 개선이 뚜렷하면 투자 가능.
-- **4원칙 (비즈니스 모델):** 단독 매출인지, 연결/종속 업체인지 파악하고 시장 점유율 이해.
-
-**[ 투자 시계열과 위기 관리 ]**
-- **5원칙 (3년 장기 투자):** 수확은 3년 뒤. 일부만 현금화하여 재투자 비율 스스로 설정.
-- **6원칙 (글로벌 위기 줍줍):** 시장 붕괴 고점 대비 20~30% 하락 시 분할 매수, 50% 밑이면 과감히 매수.
-- **7원칙 (하락장 리밸런싱):** 시장 전체가 하락할 때 기존 비중 조절 및 신규 종목 편입.
-
-**[ 대가의 매매 집행 원칙 ]**
-- **8원칙 (오후 3시 타점):** 장중 변동성 노이즈를 피하기 위해 매수 결정은 오후 3시에 내린다. (v24.0에서 '오후 2시 반' → '오후 3시'로 정밀화)
-- **9원칙 (장중 가짜 반등 경계):** 폭락장 중 일시적 반등은 속임수일 확률이 높으므로 종가 지지를 반드시 확인하고 분할 매수한다.
-- **10원칙 (포트폴리오 배분):** 개별 우량주 집중 리스크를 줄이기 위해 예산의 50%는 지수 ETF, 50%는 개별 우량주로 배분한다.
-- **11원칙 (바닥 퀀트 원칙 준수):** 감정을 배제하고 시스템이 제시하는 진바닥 스코어와 반등 신뢰도를 기계적으로 신뢰한다.
-
----
-
-## 🛡️ V. CFO 결론 코멘트
-
-> 이 v24.0 매뉴얼은 인간의 조급함과 탐욕, 공포를 수학적으로 완벽하게 통제하기 위해 만들어진 가장 차가운 갑옷입니다.
-> 완벽하게 세팅된 이 시스템에 자본을 맡기고, 일상의 평온함과 꿀잠을 마음껏 누리세요.
-""")
-
-
-with tab_risk:
+with tab_port:  # 🚨 리스크 등급 가이드
     st.header("🚨 공매도 & 변동성(Beta) 종합 리스크 가이드")
     st.markdown("""
     | 공매도 비율 | Beta (변동성) | 종합 리스크 등급 및 해석 |
@@ -1420,3 +1585,90 @@ with tab_risk:
     | 높음 (5% 이상) | 높음 (1.2 이상) | **🔴 고위험 — 하락 베팅 + 큰 변동성, 진입 신중** |
     """)
 
+with tab_port:  # 📖 11원칙 매매 가이드라인
+    st.header("📖 11원칙 퀀트 매매 마스터 매뉴얼 v25.0")
+    st.caption("v25.0: 매크로 게이트키퍼 Tier 시스템 — '칼자루는 진바닥으로 잡고, 방아쇠는 수급으로 당긴다'")
+
+    st.markdown("""
+## 📋 가문의 유산: 11원칙 퀀트 투자 마스터 매뉴얼
+
+> 💡 **[CFO 특별 지침] 100% 풀매수의 정석 (가용 예산 분배법)**
+> "진짜 100% 풀매수"는 영원히 없습니다. 항상 10~20%의 현금은 '영구적 방패'로 남겨두어 위기를 대비합니다. (6원칙 전제)
+> 즉, 풀매수란 **투자에 배정된 80~90%의 예산**을 모두 쓴 상태입니다.
+> - **평시 (Tier 1):** 30~40% 투입 (기본 포지션 구축, GTC 적립)
+> - **패닉 (Tier 3):** +10% 선발대 투입 (도매가 선점)
+> - **추세 전환 (Tier 2):** +30~50% 본대 불타기 (가장 안전하고 강하게 쏟아붓는 실질적 풀매수 타이밍)
+
+**[ 🏗️ 1단계: 무엇을 살 것인가? (종목 선정의 뼈대) ]**
+- **1원칙 [지속 성장과 도태 판별]:** 3개년 매출과 영업이익이 '지속 우상향' 하는 기업만 산다. 만약 실적이 좋더라도 3년 내내 제자리걸음이라면 절대 매수하지 않는다.
+- **2원칙 [저평가와 턴어라운드]:** 시장/섹터 대비 시가총액이 싼(저평가) 종목을 찾되, 현재 적자라도 '흑자 전환'의 뚜렷한 개선세가 보이면 선점 투자가 가능하다.
+- **3원칙 [비즈니스 생태계 꿰뚫기]:** 매출은 '시장 규모'로, 영익은 '회사의 파워(포션)'로 이해하라. 단독 매출인지, 타사에 종속된 하청(제조업 이슈)인지 생태계를 파악하고 '시대의 수요(AI/로봇 등)'가 있는 기업만 고른다.
+- **4원칙 [전장(Battlefield)의 압축]:** 이름 모를 테마주와 잡주를 버리고, 오직 글로벌을 주도하는 **미국 시장**과 국내 대형 우량주(**코스피**) 위주로만 돈을 거둔다.
+
+**[ 🛡️ 2단계: 위기를 기회로 바꾸는 자산 배분 (포트폴리오 관리) ]**
+- **5원칙 [코어와 스나이퍼 배분]:** 개별 기업의 돌발 리스크를 막기 위해, 예산의 50%는 든든한 '지수 ETF'에, 나머지 50%는 압도적 '개별 우량주'에 나누어 담는다.
+- **6원칙 [글로벌 위기는 바겐세일]:** 코로나, 리먼 등 매크로 위기로 시장 전체가 무너질 때를 노린다. 고점 대비 -20~30% 떨어지면 '분할 매수'를 시작하고, -50% 밑으로 투매가 나오면 쥐어짜 낸 여유 현금으로 '과감히' 쓸어 담는다.
+- **7원칙 [하락장 리밸런싱]:** 시장 전체가 하락하여 내 종목들이 싸졌을 때, 포기하지 말고 기존 주식의 비율을 조절하거나 더 강한 신규 우량주로 교체(리밸런싱)하여 다음 상승장을 준비한다.
+
+**[ 🎯 3단계: 언제 사고팔 것인가? (퀀트 전술과 실행) ]**
+- **8원칙 [농부의 시간: 3년 룰]:** 투자의 수확은 3년 뒤에 거둔다. 수익이 났다고 절대 100% 전량 매도하지 않으며, 일부만 매도하여 '현금화' 및 '재투자' 비율을 스스로 정해 복리를 굴린다.
+- **9원칙 [오후 3시의 결단]:** 장중의 요동치는 가짜 반등과 노이즈(속임수)에 당하지 않기 위해, 매수 방아쇠는 항상 모든 것이 결정되는 오후 3시(종가 부근)에만 당긴다.
+- **10원칙 [불타기 3단계 티어(Tier) 룰]:** 극단적 폭락(진바닥 90%)에는 1차 선발대(10%)만 먼저 넣고, 남은 현금은 환율/선물 안정 및 '5일선 안착' 등 매크로/수급 게이트키퍼가 확인되었을 때만 2차로 투입한다.
+- **11원칙 [데이터의 기계적 신뢰]:** 인간의 뇌동매매(FOMO와 공포)를 철저히 배제한다. 내 감정보다 시스템이 계산한 '진바닥 확률'과 '반등 신뢰도' 점수를 기계적으로 믿고 따른다.
+
+---
+
+### 💡 CFO의 헌사
+
+> 이 v25.0 매뉴얼은 인간의 조급함과 탐욕, 공포를 수학적으로 완벽하게 통제하기 위해 만들어진 가장 차가운 갑옷입니다.
+> 
+> **워런 버핏의 가치투자 철학(1~4원칙)**으로 아내분께서 좋은 주식을 고르는 눈을 갖게 해주고, 
+> **레이 달리오의 자산배분 철학(5~7원칙)**으로 위기가 와도 가문의 재산이 녹지 않게 방어해 주며, 
+> **상위 1% 퀀트 트레이더의 전술(8~11원칙)**로 바닥에서 줍고 무릎에서 불타기 하는 기계적 룰입니다.
+> 
+> 완벽하게 세팅된 이 원칙에 자본을 맡기고, 일상의 평온함과 꿀잠을 마음껏 누리세요.
+    """)
+
+
+
+
+with tab_calendar:
+    st.subheader("📅 마켓 캘린더 (실적 & 매크로)")
+    st.caption("시장 방향성을 결정하는 핵심 이벤트들을 관리합니다.")
+    
+    col_c1, col_c2 = st.columns([1, 1])
+    with col_c1:
+        if st.button("🔄 자동 실적 업데이트 (yfinance)"):
+            with st.spinner("빅테크 실적발표일을 업데이트 중입니다..."):
+                if calendar_manager.update_earnings_automatically():
+                    st.success("실적 캘린더가 업데이트 되었습니다.")
+                else:
+                    st.warning("업데이트할 새로운 실적 일정이 없습니다.")
+    with col_c2:
+        if st.button("🔄 뉴스 기반 매크로 업데이트"):
+            with st.spinner("뉴스 기반 매크로(FOMC, 금통위 등) 스크래핑 중..."):
+                if calendar_manager.update_macro_events_automatically():
+                    st.success("매크로 일정이 업데이트 되었습니다.")
+                else:
+                    st.warning("추출된 새로운 매크로 일정이 없습니다.")
+                    
+    cal_df = calendar_manager.load_calendar()
+    
+    # st.data_editor returns modified dataframe
+    edited_df = st.data_editor(
+        cal_df,
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "Date": st.column_config.DateColumn("날짜", required=True, format="YYYY-MM-DD"),
+            "Type": st.column_config.SelectboxColumn("구분", options=["실적", "매크로", "국내", "기타"], required=True),
+            "Impact": st.column_config.SelectboxColumn("중요도", options=["High", "Medium", "Low"], required=True)
+        }
+    )
+    
+    if st.button("💾 캘린더 변경사항 저장"):
+        for i, row in edited_df.iterrows():
+            if hasattr(row['Date'], 'strftime'):
+                edited_df.at[i, 'Date'] = row['Date'].strftime('%Y-%m-%d')
+        calendar_manager.save_calendar(edited_df)
+        st.success("캘린더가 저장되었습니다. 마스터 리포트 프롬프트에 즉시 반영됩니다.")
