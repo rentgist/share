@@ -227,11 +227,12 @@ def calculate_us_risk_radar(vix_hist, vix3m_hist, hyg_hist, ief_hist, spy_hist, 
                                  f"20일 순변화는 미미. 추세 매매 실패 확률 높음 → 현금 비중 유지 유리."))
             danger_count += 1
 
-    # ── ⑥ 🆕 장단기 금리 역전 (수익률 곡선 역전 = 경기침체 선행 신호) ──
+    # ── ⑥ 장단기 금리 역전 (수익률 곡선 역전 = 경기침체 선행 신호) ──
+    # ^IRX: 3개월 T-Bill, yfinance는 이미 % 단위로 반환 (예: 5.20)
     if tnx_hist is not None and irx_hist is not None and not tnx_hist.empty and not irx_hist.empty:
         try:
             tnx_val = float(tnx_hist['Close'].dropna().iloc[-1])  # 10년물 (%)
-            irx_val = float(irx_hist['Close'].dropna().iloc[-1]) / 10.0  # ^IRX는 할인율 단위 → % 환산
+            irx_val = float(irx_hist['Close'].dropna().iloc[-1])   # 3개월물 (% 그대로 사용, /10 제거)
             spread = tnx_val - irx_val  # 장단기 스프레드 (양수=정상, 음수=역전)
 
             if spread <= -0.5:
@@ -255,13 +256,13 @@ def calculate_us_risk_radar(vix_hist, vix3m_hist, hyg_hist, ief_hist, spy_hist, 
             soxx_20d = (float(soxx_hist['Close'].dropna().iloc[-1]) / float(soxx_hist['Close'].dropna().iloc[-21]) - 1) * 100
             rel_strength = mu_20d - soxx_20d  # 양수 = MU 강세 = DRAM 업황 호조
 
+            # 반도체 업황은 정보 제공 전용 — 노이즈가 심해 danger_count에 미반영
             if rel_strength >= 5:
-                alerts.append(("🟢", f"반도체 업황 강세 — MU(마이크론) 20일 수익률이 SOX 대비 {rel_strength:+.1f}%p 초과 (DRAM 수요 회복 시그널)."))
+                alerts.append(("🟢", f"반도체 업황 강세 — MU(마이크론) 20일 수익률이 SOX 대비 {rel_strength:+.1f}%p 초과 (DRAM 수요 회복 시그널). [참고용]"))
             elif rel_strength <= -5:
-                alerts.append(("🔴", f"반도체 업황 약세 — MU 20일 수익률이 SOX 대비 {rel_strength:+.1f}%p 부진 (DRAM 공급 과잉 경고). 반도체 비중 축소 검토."))
-                danger_count += 1
+                alerts.append(("🟠", f"반도체 업황 약세 — MU 20일 수익률이 SOX 대비 {rel_strength:+.1f}%p 부진 (DRAM 공급 과잉 경고). [참고용, 점수 미반영]"))
             else:
-                alerts.append(("🟡", f"반도체 업황 중립 — MU vs SOX 상대 강도 {rel_strength:+.1f}%p (방향성 탐색 중)."))
+                alerts.append(("🟡", f"반도체 업황 중립 — MU vs SOX 상대 강도 {rel_strength:+.1f}%p (방향성 탐색 중). [참고용]"))
         except Exception:
             alerts.append(("⚪", "반도체 업황 지표 산출 불가."))
 
@@ -383,22 +384,25 @@ def _score_bottom(drawdown, rsi, vix, cnn=None, details=None):
 
     s, maxs = 0, 80  # Drawdown 35 + RSI 20 + VIX 25
 
-    if drawdown <= -25: s += 35; _log(f"🟢 대세 하락장 낙폭 ({drawdown:.1f}%) [+35/35]")
+    # Drawdown 점수: -5%부터 점수 시작 (기존 -8% 기준에서 완화)
+    if drawdown <= -25:   s += 35; _log(f"🟢 대세 하락장 낙폭 ({drawdown:.1f}%) [+35/35]")
     elif drawdown <= -15: s += 22; _log(f"🟢 깊은 조정 ({drawdown:.1f}%) [+22/35]")
-    elif drawdown <= -8: s += 10; _log(f"🟡 단기 조정 ({drawdown:.1f}%) [+10/35]")
+    elif drawdown <= -10: s += 14; _log(f"🟡 중간 조정 ({drawdown:.1f}%) [+14/35]")
+    elif drawdown <= -5:  s += 7;  _log(f"🟡 얕은 조정 ({drawdown:.1f}%) [+7/35]")
     else: _log(f"⚪ 고점 근처 ({drawdown:.1f}%) [+0/35]")
 
     if rsi is not None:
-        if rsi <= 30: s += 20; _log(f"🟢 RSI 극단 과매도 ({rsi:.1f}) [+20/20]")
+        if rsi <= 30:   s += 20; _log(f"🟢 RSI 극단 과매도 ({rsi:.1f}) [+20/20]")
         elif rsi <= 38: s += 12; _log(f"🟢 RSI 과매도 ({rsi:.1f}) [+12/20]")
         elif rsi <= 45: s += 5;  _log(f"🟡 RSI 과매도 진입 ({rsi:.1f}) [+5/20]")
         else: _log(f"⚪ RSI 정상 ({rsi:.1f}) [+0/20]")
 
     if vix is not None:
-        if vix >= 40: s += 25; _log(f"🟢 VIX 극단 패닉 ({vix:.1f}) [+25/25]")
+        if vix >= 40:   s += 25; _log(f"🟢 VIX 극단 패닉 ({vix:.1f}) [+25/25]")
         elif vix >= 32: s += 20; _log(f"🟢 VIX 패닉 투매 ({vix:.1f}) [+20/25]")
         elif vix >= 26: s += 12; _log(f"🟡 VIX 공포 확산 ({vix:.1f}) [+12/25]")
-        elif vix >= 22: s += 5;  _log(f"🟡 VIX 상승 주의 ({vix:.1f}) [+5/25]")
+        elif vix >= 22: s += 6;  _log(f"🟡 VIX 상승 주의 ({vix:.1f}) [+6/25]")
+        elif vix >= 18: s += 2;  _log(f"⚪ VIX 경계 구간 ({vix:.1f}) [+2/25]")
         else: _log(f"⚪ VIX 평온 ({vix:.1f}) [+0/25]")
 
     if cnn is not None:
@@ -778,13 +782,13 @@ def calculate_regime_classification(macro_score, flow_score, warning_days_overri
         action = "20일선 탈환 완료. 본대 자금 분할 진입 시작."
         color = "#fcca46"
     elif flow_score >= 50 and macro_score < 50:
-        if warning_days >= 5:
-            regime = "✅ 경고 국면 확정 (5거래일 지지 성공)"
-            action = "매크로 회복(20일선) 임박. 5일선 지지 확인 완료. '선발대(10~15%)' 진입 검토."
+        if warning_days >= 3:
+            regime = "✅ 경고 국면 확정 (3거래일 지지 성공)"
+            action = "매크로 회복(20일선) 임박. 3일선 지지 확인 완료. '선발대(10~20%)' 진입 검토."
             color = "#ff9900"
         else:
-            regime = f"⚠️ 경고 국면 (바닥 탈출 시도 - {warning_days}/5일 관찰 중)"
-            action = f"수급이 포착되었습니다. 내일도 5일선 지지 시 관찰 지속 (남은 기간: {5-warning_days}거래일)."
+            regime = f"⚠️ 경고 국면 (바닥 탈출 시도 - {warning_days}/3일 관찰 중)"
+            action = f"수급이 포착되었습니다. 내일도 5일선 지지 시 관찰 지속 (남은 기간: {3-warning_days}거래일)."
             color = "#ff9900"
     else:
         regime = "🔴 PASS (매수 보류)"
@@ -855,14 +859,15 @@ def get_strategic_advice(danger_count, bottom_score, bottom_verdict, regime="", 
             "ORION은 바닥을 감지합니다. 진입 여부는 체크리스트가, 타점은 레이더가 결정합니다.",
         ]
         
-    # 4순위: 추세 전환 및 불타기 (바닥 점수 50~79) -> Tier 2
+    # 4순위: 추세 전환 및 분할 매수 (바닥 점수 50~79) -> Tier 2
+    # recovery_score: 100=Breadth+Credit 둘 다 회복, 50=하나만 회복, 25=부분, 0=미회복
     elif bottom_score >= 50:
-        gates_ok = (recovery_score is not None and recovery_score >= 2)
+        gates_ok = (recovery_score is not None and recovery_score >= 30)  # 기준 완화: 50→30
         if gates_ok:
             headline = "🟡 ORION Signal : GO — 추세 전환이 확인되었습니다."
             color = "#fcca46"
             actions = [
-                "바닥 점수와 반등 신뢰도가 모두 충족되었습니다.",
+                "바닥 점수와 반등 신뢰도가 충족되었습니다.",
                 "아래 체크리스트에서 최종 GO 사인을 확인한 뒤, 종목 레이더에서 타점을 잡고 분할 진입하세요.",
                 "오후 종가 부근에 집행하여 리스크를 최소화하세요.",
             ]
@@ -870,8 +875,8 @@ def get_strategic_advice(danger_count, bottom_score, bottom_verdict, regime="", 
             headline = "🟡 ORION Signal : WAIT — 바닥 확인 중이나, 아직 때가 아닙니다."
             color = "#fcca46"
             actions = [
-                "바닥 점수는 충분하지만, 반등 신뢰도가 아직 부족합니다.",
-                "수급 전환, 5일선 돌파, 환율 안정 중 2가지 이상이 확인될 때까지 기다립니다.",
+                "바닥 점수는 충분하지만, Breadth(RSP) 또는 Credit(HYG) 회복 신호가 아직 미흡합니다.",
+                "수급 전환, 5일선 돌파, 환율 안정 중 하나 이상이 확인될 때 진입 검토하세요.",
                 "기회는 많습니다. 확률이 높을 때만 움직입니다.",
             ]
 
