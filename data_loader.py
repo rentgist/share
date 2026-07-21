@@ -232,6 +232,46 @@ def get_macro_charts():
         df_kospi = fetch_fdr_history("KS11", start_10y)
         if not df_kospi.empty:
             df_kospi.index = pd.to_datetime(df_kospi.index).tz_localize(None).normalize()
+            
+            # 장중 실시간 데이터 보완 (오늘 날짜 데이터가 반영되지 않은 경우 yfinance에서 보완)
+            today_str = pd.Timestamp.now().strftime('%Y-%m-%d')
+            last_date_str = df_kospi.index[-1].strftime('%Y-%m-%d')
+            if last_date_str != today_str:
+                live_close = None
+                try:
+                    ticker = yf.Ticker("^KS11")
+                    live_close = float(ticker.fast_info.last_price)
+                except Exception:
+                    try:
+                        # fast_info 실패 시 download로 fallback
+                        yf_kospi = yf.download("^KS11", period="1d")
+                        if not yf_kospi.empty:
+                            val_series = yf_kospi['Close']
+                            if isinstance(val_series, pd.DataFrame):
+                                live_close = float(val_series.iloc[-1].iloc[0])
+                            else:
+                                live_close = float(val_series.iloc[-1])
+                    except Exception:
+                        pass
+                
+                if live_close is not None and not np.isnan(live_close):
+                    new_row = pd.Series(index=df_kospi.columns, dtype='float64')
+                    new_row['Close'] = live_close
+                    # 가능한 경우 시고저가도 yfinance에서 채움
+                    try:
+                        yf_today_df = yf.download("^KS11", period="1d")
+                        if not yf_today_df.empty:
+                            for col in ['Open', 'High', 'Low', 'Volume']:
+                                if col in df_kospi.columns and col in yf_today_df.columns:
+                                    val_series = yf_today_df[col]
+                                    if isinstance(val_series, pd.DataFrame):
+                                        new_row[col] = float(val_series.iloc[-1].iloc[0])
+                                    else:
+                                        new_row[col] = float(val_series.iloc[-1])
+                    except Exception:
+                        pass
+                    df_kospi.loc[pd.Timestamp(today_str)] = new_row
+
             result["kospi_10y"] = df_kospi[~df_kospi.index.duplicated(keep='last')]
     except Exception:
         result["kospi_10y"] = pd.DataFrame()
