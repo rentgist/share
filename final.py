@@ -1633,10 +1633,11 @@ with tab_port:  # 📖 11원칙 매매 가이드라인
 
 
 with tab_calendar:
-    st.subheader("📅 마켓 캘린더 (실적 & 매크로)")
-    st.caption("시장 방향성을 결정하는 핵심 이벤트들을 관리합니다.")
-    
-    col_c1, col_c2 = st.columns([1, 1])
+    st.subheader("📅 마켓 캘린더 (실적 · 거시 · 연준)")
+    st.caption("발표일 자체보다, 발표 직후 금리·시장 폭·ORION 진입 판단이 어떻게 바뀌는지를 함께 봅니다.")
+    st.info("**읽는 순서:** 물가·금리 → 경기·고용 → 연준 → 실적/반도체.  High 이벤트 전후에는 갭 상승 추격보다 실제 수치와 10년물 금리 반응을 먼저 확인하세요.")
+
+    col_c1, col_c2, col_c3 = st.columns([1, 1, 1])
     with col_c1:
         if st.button("🔄 자동 실적 업데이트 (yfinance)"):
             with st.spinner("빅테크 실적발표일을 업데이트 중입니다..."):
@@ -1645,6 +1646,11 @@ with tab_calendar:
                 else:
                     st.warning("업데이트할 새로운 실적 일정이 없습니다.")
     with col_c2:
+        if st.button("📌 확정 핵심 거시 일정 반영"):
+            event_count = calendar_manager.sync_core_macro_events()
+            st.success(f"공식 발표일 기준 핵심 거시·연준 일정 {event_count}건을 반영했습니다.")
+            st.rerun()
+    with col_c3:
         if st.button("🔄 뉴스 기반 매크로 업데이트"):
             with st.spinner("뉴스 기반 매크로(FOMC, 금통위 등) 스크래핑 중..."):
                 if calendar_manager.update_macro_events_automatically():
@@ -1653,6 +1659,24 @@ with tab_calendar:
                     st.warning("추출된 새로운 매크로 일정이 없습니다.")
                     
     cal_df = calendar_manager.load_calendar()
+
+    if not cal_df.empty:
+        today_calendar = pd.Timestamp.now().date()
+        upcoming_calendar = cal_df[cal_df["Date"] >= today_calendar].sort_values("Date")
+        if not upcoming_calendar.empty:
+            next_event = upcoming_calendar.iloc[0]
+            high_count = int((upcoming_calendar["Impact"] == "High").sum())
+            st.markdown(
+                f"**다음 주요 일정:** {next_event['Date'].strftime('%m/%d')} · {next_event['Event']}  "
+                f"&nbsp;&nbsp;|&nbsp;&nbsp; 향후 High 중요도 일정 **{high_count}건**"
+            )
+        with st.expander("🧭 ORION 캘린더 해석 가이드", expanded=False):
+            st.markdown("""
+            - **물가·금리:** CPI·PPI·PCE가 예상보다 높으면 장기금리 상승과 기술주 할인율 부담을 우선 점검합니다.
+            - **경기·고용:** 소매판매·고용은 경기 지속성을 봅니다. 물가 상승과 경기 둔화가 함께 나오면 가장 보수적으로 대응합니다.
+            - **연준:** FOMC·의사록·잭슨홀은 정책 경로를 바꿀 수 있습니다. 발표 전에는 비중 확대보다 기존 신호의 유지 여부를 확인합니다.
+            - **실적·반도체:** 좋은 실적도 금리 급등 국면에서는 주가 반응이 제한될 수 있으므로, SOXX·RSP/SPY와 함께 해석합니다.
+            """)
     
     # st.data_editor returns modified dataframe
     edited_df = st.data_editor(
@@ -1661,7 +1685,7 @@ with tab_calendar:
         use_container_width=True,
         column_config={
             "Date": st.column_config.DateColumn("날짜", required=True, format="YYYY-MM-DD"),
-            "Type": st.column_config.SelectboxColumn("구분", options=["실적", "매크로", "국내", "기타"], required=True),
+            "Type": st.column_config.SelectboxColumn("구분", options=["실적", "물가·금리", "경기·고용", "연준", "국내", "반도체", "기타"], required=True),
             "Impact": st.column_config.SelectboxColumn("중요도", options=["High", "Medium", "Low"], required=True)
         }
     )

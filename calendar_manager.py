@@ -8,6 +8,33 @@ import re
 
 CALENDAR_FILE = "market_calendar.csv"
 
+# 공식 발표 일정으로 확인한 고중요도 거시 이벤트입니다. 뉴스 제목을 파싱해
+# 날짜를 추정하지 않고, 일정이 확정된 뒤에만 이 목록을 갱신합니다.
+CORE_MACRO_EVENTS_2026 = [
+    ("2026-08-12", "물가·금리", "미국 7월 CPI 발표 (21:30 KST)", "High",
+     "물가 상회 시 장기금리와 기술주 할인율 부담 확대. 둔화 시 신규진입 여건 개선."),
+    ("2026-08-13", "물가·금리", "미국 7월 PPI 발표 (21:30 KST)", "High",
+     "기업 비용의 물가 압력을 확인. CPI와 같은 방향이면 금리 반응이 커질 수 있음."),
+    ("2026-08-14", "경기·고용", "미국 7월 소매판매 발표 (21:30 KST)", "High",
+     "소비·경기 지속성 확인. 고물가와 소비 둔화의 동시 발생은 위험 신호."),
+    ("2026-08-14", "경기·고용", "미시간대 8월 소비심리 잠정치 (23:00 KST)", "Medium",
+     "기대인플레이션 급등 여부를 점검. 장기금리 민감 구간에서는 중요도가 높아짐."),
+    ("2026-08-19", "연준", "7월 FOMC 의사록 공개 (03:00 KST, 8/20)", "High",
+     "연준 내부의 물가·유동성 인식 확인. 매파적이면 기술주 비중 확대를 보류."),
+    ("2026-08-26", "물가·금리", "미국 7월 PCE·개인소득 발표 (21:30 KST)", "High",
+     "연준 선호 물가 지표. 핵심 PCE의 방향이 금리 경로 판단에 직접 연결됨."),
+    ("2026-08-26", "경기·고용", "미국 2분기 GDP 수정치 발표 (21:30 KST)", "High",
+     "성장과 물가를 함께 해석. 성장 둔화와 물가 재상승 조합은 가장 불리."),
+    ("2026-08-27", "연준", "잭슨홀 경제정책 심포지엄 시작", "High",
+     "8/27~29 연준 인사 발언에 따른 장기금리 변동성 경계. 갭 상승 추격 금지."),
+    ("2026-09-04", "경기·고용", "미국 8월 고용보고서 발표 (21:30 KST)", "High",
+     "고용·임금이 9월 연준 판단에 미치는 핵심 입력값."),
+    ("2026-09-11", "물가·금리", "미국 8월 CPI 발표 (21:30 KST)", "High",
+     "9월 FOMC 직전의 핵심 물가 확인. 예상치 대비 방향을 우선 해석."),
+    ("2026-09-15", "연준", "9월 FOMC 회의 시작", "High",
+     "9/15~16 회의 및 점도표. 정책금리·유동성 경로 재평가 구간."),
+]
+
 # 대표 글로벌/국내 빅테크 티커
 MAJOR_TICKERS = {
     "ASML": "ASML",
@@ -30,6 +57,7 @@ def load_calendar():
     # [BUG FIX] Convert 'Date' string to datetime.date to prevent StreamlitAPIException
     if not df.empty and 'Date' in df.columns:
         df['Date'] = pd.to_datetime(df['Date'], errors='coerce').dt.date
+        df = df.sort_values(by="Date", na_position="last").reset_index(drop=True)
     return df
 
 def save_calendar(df):
@@ -38,6 +66,30 @@ def save_calendar(df):
     if not df_save.empty and 'Date' in df_save.columns:
         df_save['Date'] = pd.to_datetime(df_save['Date']).dt.strftime('%Y-%m-%d')
     df_save.to_csv(CALENDAR_FILE, index=False, encoding="utf-8-sig")
+
+
+def sync_core_macro_events():
+    """확정된 핵심 거시 일정만 추가·갱신한다.
+
+    수동으로 입력한 다른 이벤트는 보존하고, 동일 이벤트만 최신 설명으로 교체한다.
+    """
+    df = load_calendar()
+    core_df = pd.DataFrame(
+        CORE_MACRO_EVENTS_2026,
+        columns=["Date", "Type", "Event", "Impact", "Notes"],
+    )
+    core_df["Date"] = pd.to_datetime(core_df["Date"]).dt.date
+
+    if df.empty:
+        merged = core_df
+    else:
+        # 이벤트명이 동일한 행만 대체해 수동 일정과 실적 일정을 보존한다.
+        merged = df[~df["Event"].isin(core_df["Event"])].copy()
+        merged = pd.concat([merged, core_df], ignore_index=True)
+
+    merged = merged.sort_values(by=["Date", "Impact", "Event"]).reset_index(drop=True)
+    save_calendar(merged)
+    return len(core_df)
 
 def fetch_single_earnings(name, ticker):
     try:
